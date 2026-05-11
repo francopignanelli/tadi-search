@@ -1,0 +1,13 @@
+{
+  "name": "tadi-search",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Buscador inteligente de tramites TAD con IA",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.1",
+    "express": "^5.2.1"
+  }
+}
