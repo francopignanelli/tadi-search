@@ -1,7 +1,8 @@
-﻿const SELECTORS = {
+const SELECTORS = {
   input: '#search-input',
   clearButton: '#clear-btn',
-  aiButton: '#ai-btn',
+  searchButton: '#search-btn',
+  aiToggle: '#ai-toggle',
   emptyState: '#empty-state',
   aiCard: '#ai-card',
   resultsMeta: '#results-meta',
@@ -10,29 +11,23 @@
 
 const ICONS = {
   brain: svg('<path d="M9.5 2a2.5 2.5 0 0 1 5 0v.5a2.5 2.5 0 0 1-5 0V2z"/><path d="M4.5 8a4 4 0 0 1 7.5-1.9A4 4 0 0 1 19.5 8"/><path d="M4.5 8v.5a4 4 0 0 0 4 4h7a4 4 0 0 0 4-4V8"/><path d="M8.5 12.5v4a2 2 0 0 0 4 0v-1"/><path d="M15.5 12.5v2a2 2 0 0 1-4 0"/>'),
-  bulb: svg('<line x1="9" y1="18" x2="15" y2="18"/><line x1="10" y1="22" x2="14" y2="22"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/>'),
   empty: svg('<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/>', '1.5'),
   error: svg('<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'),
   info: svg('<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'),
   loader: svg('<path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>', '2.5'),
 };
 
-const STOPWORDS = new Set([
-  'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'y', 'o', 'a', 'de', 'del', 'en', 'para', 'por',
-  'con', 'sin', 'que', 'quiero', 'necesito', 'tengo', 'hacer', 'iniciar', 'realizar', 'obtener',
-  'presentar', 'se', 'su', 'sus', 'mi', 'mis', 'tu', 'tus', 'este', 'esta', 'esto', 'muy', 'mas', 'más',
-  'pero', 'como', 'cómo', 'si', 'no', 'soy', 'es', 'son', 'ser', 'estar', 'algun', 'alguna', 'algún',
-  'le', 'me', 'te', 'lo', 'al', 'sobre', 'entre', 'desde', 'hasta', 'hay', 'cuando', 'cuándo', 'donde',
-  'dónde', 'tramite', 'tramites', 'tramitar', 'solicitud', 'solicitar', 'registro', 'registrar',
-  'gestion', 'gestionar', 'permiso', 'permisos',
-]);
-
 const state = {
   catalog: null,
   fuse: null,
+  searchPending: false,
   aiPending: false,
+  aiEnabled: true,
+  embeddingResults: [],
+  aiSuggestedIds: new Set(),
 };
 
+const MAX_EMBEDDING_RESULTS = 15;
 const MAX_AI_CANDIDATES = 6;
 const MAX_AI_DESCRIPTION_LENGTH = 450;
 
@@ -44,15 +39,17 @@ function initApp() {
 
   ui.input.addEventListener('input', () => handleInput(ui));
   ui.input.addEventListener('keydown', event => {
-    if (event.key === 'Enter') searchWithAI(ui);
+    if (event.key === 'Enter') runSearch(ui);
   });
   ui.clearButton.addEventListener('click', () => {
     ui.input.value = '';
     ui.input.focus();
     handleInput(ui);
   });
-  ui.aiButton.addEventListener('click', () => searchWithAI(ui));
+  ui.searchButton.addEventListener('click', () => runSearch(ui));
+  ui.aiToggle.addEventListener('click', () => toggleAI(ui));
 
+  updateAIToggle(ui);
   loadCatalog();
   ui.input.focus();
 }
@@ -81,7 +78,7 @@ async function loadCatalog() {
   return state.catalog;
 }
 
-// Inicializa Fuse.js para hacer busqueda aproximada por nombre y descripcion.
+// Inicializa Fuse.js para hacer busqueda aproximada por nombre y descripcion corta.
 function initFuse(items) {
   if (typeof Fuse === 'undefined') return;
 
@@ -97,10 +94,12 @@ function initFuse(items) {
   });
 }
 
-// Reacciona a cambios en el input: limpia estados y muestra resultados locales.
+// Reacciona a cambios en el input: limpia estados y muestra resultados predictivos.
 function handleInput(ui) {
   const query = ui.input.value.trim();
   ui.clearButton.style.display = query ? 'inline-flex' : 'none';
+  state.embeddingResults = [];
+  state.aiSuggestedIds = new Set();
   hideAI(ui);
 
   if (!query) {
@@ -114,7 +113,7 @@ function handleInput(ui) {
     return;
   }
 
-  showResults(ui, searchLocal(query));
+  showResults(ui, searchLocal(query), { mode: 'predictive' });
 }
 
 // Busca tramites localmente usando Fuse.js o una coincidencia simple como respaldo.
@@ -129,56 +128,59 @@ function searchLocal(query) {
     .slice(0, 15);
 }
 
-// Arma una lista corta de candidatos para enviar a Gemini en vez del catalogo completo.
-function buildAICandidates(query) {
-  const fuzzyHits = searchLocal(query);
-  const seenIds = new Set(fuzzyHits.map(item => item.id));
-  const tokens = tokenize(query);
-
-  if (!tokens.length) return fuzzyHits.slice(0, MAX_AI_CANDIDATES);
-
-  const tokenHits = [];
-  for (const item of state.catalog || []) {
-    if (seenIds.has(item.id)) continue;
-
-    const name = normalize(item.nombre);
-    const description = normalize(item.descripcion);
-    let score = 0;
-
-    for (const token of tokens) {
-      const stem = token.length >= 6 ? token.slice(0, 5) : token;
-      if (name.includes(token)) score += 5;
-      else if (name.includes(stem)) score += 4;
-      else if (description.includes(token)) score += 3;
-      else if (description.includes(stem)) score += 2;
-    }
-
-    if (score > 0) tokenHits.push({ item, score });
-  }
-
-  tokenHits.sort((a, b) => b.score - a.score);
-  return [...fuzzyHits.slice(0, 4), ...tokenHits.slice(0, 4).map(hit => hit.item)]
-    .slice(0, MAX_AI_CANDIDATES);
-}
-
-// Ejecuta la busqueda asistida por IA y coordina sus estados de carga y error.
-async function searchWithAI(ui) {
+// Ejecuta la busqueda por embeddings y, si esta activo, pide la sugerencia de IA.
+async function runSearch(ui) {
   const query = ui.input.value.trim();
-  if (!query || state.aiPending) return;
+  if (!query || state.searchPending) return;
 
   const catalog = await loadCatalog();
   if (!catalog.length) {
-    showAI(ui, `<div class="ai-error">${ICONS.error} No se pudo cargar el catálogo.</div>`);
+    showResultsError(ui, 'No se pudo cargar el catálogo.');
     return;
   }
 
-  const candidates = buildAICandidates(query);
-  if (!candidates.length) {
-    showAI(ui, aiShell(`<div class="ai-notfound">${ICONS.empty} No encontré trámites candidatos. Intentá con más detalle.</div>`));
-    return;
+  hideAI(ui);
+  state.aiSuggestedIds = new Set();
+  setSearchButton(ui, true);
+  showEmbeddingLoading(ui);
+
+  try {
+    const results = await searchByEmbedding(query);
+    state.embeddingResults = results;
+    showResults(ui, results, { mode: 'embedding' });
+
+    if (state.aiEnabled && results.length) {
+      await requestAISuggestion(ui, query, results);
+    }
+  } catch (error) {
+    state.embeddingResults = [];
+    showResultsError(ui, error.message || 'No se pudo completar la búsqueda por embeddings.');
+  } finally {
+    setSearchButton(ui, false);
+  }
+}
+
+// Llama al backend Node, que a su vez consulta el servicio local de embeddings.
+async function searchByEmbedding(query) {
+  const response = await fetch('/api/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q: query, top_k: MAX_EMBEDDING_RESULTS }),
+  });
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.error || 'No se pudo consultar la búsqueda por embeddings.');
   }
 
-  setAIButton(ui, true);
+  return data.resultados || [];
+}
+
+// Pide a Gemini una sugerencia limitada a los resultados filtrados por embeddings.
+async function requestAISuggestion(ui, query, results) {
+  const candidates = results.slice(0, MAX_AI_CANDIDATES);
+
+  setAIPending(true);
   showAI(ui, aiShell(`<div class="ai-loading">${ICONS.loader} Analizando con IA...</div>`));
 
   try {
@@ -187,11 +189,19 @@ async function searchWithAI(ui) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ q: query, candidatos: candidates.map(toAICandidate) }),
     });
-    renderAISuggestion(ui, await response.json());
-  } catch {
-    showAI(ui, aiShell(`<div class="ai-error">${ICONS.error} Error al consultar la IA. Verificá la conexión.</div>`));
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Error al consultar la IA.');
+    }
+
+    if (!state.aiEnabled) return;
+    renderAISuggestion(ui, data);
+  } catch (error) {
+    if (!state.aiEnabled) return;
+    showAI(ui, aiShell(`<div class="ai-error">${ICONS.error} ${escapeHtml(error.message || 'Error al consultar la IA.')}</div>`));
   } finally {
-    setAIButton(ui, false);
+    setAIPending(false);
   }
 }
 
@@ -209,23 +219,65 @@ function renderAISuggestion(ui, data) {
 
   const principal = findById(data.principal.id);
   const alternatives = (data.alternativas || [])
-    .map(alternative => ({ item: findById(alternative.id), reason: alternative.razon }))
-    .filter(alternative => alternative.item);
+    .map(alternative => findById(alternative.id))
+    .filter(Boolean);
+  const suggestedIds = buildAISuggestedIds(principal, alternatives);
 
   let content = '';
   if (data.explicacion) {
     content += `<div class="ai-exp">${ICONS.info} ${escapeHtml(data.explicacion)}</div>`;
   }
   if (principal) {
-    content += `<div class="ai-principal-wrap">${renderCard(principal, { principal: true, reason: data.principal.razon })}</div>`;
+    content += `<div class="ai-principal-wrap">${renderCard(principal, { principal: true, showScore: true })}</div>`;
   }
   if (alternatives.length) {
     content += '<div class="alts-label">También puede ser:</div><div class="alts-list">';
-    content += alternatives.map(alternative => renderCard(alternative.item, { alt: true, reason: alternative.reason })).join('');
+    content += alternatives.map(alternative => renderCard(alternative, { alt: true, showScore: true })).join('');
     content += '</div>';
   }
 
+  state.aiSuggestedIds = suggestedIds;
   showAI(ui, aiShell(content));
+  showResults(ui, getVisibleEmbeddingResults(), { mode: 'embedding' });
+}
+
+// Devuelve los resultados de embeddings sin los tramites ya mostrados por IA.
+function getVisibleEmbeddingResults() {
+  if (!state.aiSuggestedIds.size) return state.embeddingResults;
+
+  return state.embeddingResults
+    .filter(item => !state.aiSuggestedIds.has(String(item.id)));
+}
+
+// Arma el conjunto de IDs ya representados en la tarjeta de IA.
+function buildAISuggestedIds(principal, alternatives) {
+  const ids = new Set();
+
+  if (principal) ids.add(String(principal.id));
+  for (const alternative of alternatives) {
+    ids.add(String(alternative.id));
+  }
+
+  return ids;
+}
+
+// Activa o desactiva las respuestas de IA.
+function toggleAI(ui) {
+  state.aiEnabled = !state.aiEnabled;
+  updateAIToggle(ui);
+  if (!state.aiEnabled) {
+    state.aiSuggestedIds = new Set();
+    hideAI(ui);
+    if (state.embeddingResults.length) {
+      showResults(ui, state.embeddingResults, { mode: 'embedding' });
+    }
+  }
+}
+
+// Actualiza el estado visual del toggle IA.
+function updateAIToggle(ui) {
+  ui.aiToggle.classList.toggle('active', state.aiEnabled);
+  ui.aiToggle.setAttribute('aria-pressed', String(state.aiEnabled));
 }
 
 // Muestra el estado inicial cuando no hay una busqueda activa.
@@ -242,19 +294,37 @@ function showLoadingCatalog(ui) {
   ui.results.innerHTML = `<div class="ai-loading">${ICONS.loader} Cargando catálogo...</div>`;
 }
 
-// Renderiza la lista de resultados locales o el mensaje de ausencia de resultados.
-function showResults(ui, results) {
+// Muestra un estado transitorio mientras se consulta el ranking semantico.
+function showEmbeddingLoading(ui) {
+  ui.emptyState.style.display = 'none';
+  ui.resultsMeta.style.display = 'none';
+  ui.results.innerHTML = `<div class="ai-loading">${ICONS.loader} Buscando por embeddings...</div>`;
+}
+
+// Renderiza la lista de resultados o el mensaje de ausencia de resultados.
+function showResults(ui, results, context = {}) {
   ui.emptyState.style.display = 'none';
 
   if (!results.length) {
     ui.resultsMeta.style.display = 'none';
-    ui.results.innerHTML = `<div class="state-no-results">${ICONS.empty} Sin resultados. Intentá con otras palabras o usá <strong>Buscar con IA</strong>.</div>`;
+    const message = context.mode === 'embedding'
+      ? 'Sin resultados por embeddings. Intentá con otras palabras.'
+      : 'Sin resultados. Intentá con otras palabras o presioná Buscar.';
+    ui.results.innerHTML = `<div class="state-no-results">${ICONS.empty} ${message}</div>`;
     return;
   }
 
+  const suffix = context.mode === 'embedding' ? ' por embeddings' : '';
   ui.resultsMeta.style.display = 'block';
-  ui.resultsMeta.textContent = `${results.length} resultado${results.length !== 1 ? 's' : ''} encontrado${results.length !== 1 ? 's' : ''}`;
-  ui.results.innerHTML = results.map(item => renderCard(item)).join('');
+  ui.resultsMeta.textContent = `${results.length} resultado${results.length !== 1 ? 's' : ''} encontrado${results.length !== 1 ? 's' : ''}${suffix}`;
+  ui.results.innerHTML = results.map(item => renderCard(item, { showScore: context.mode === 'embedding' })).join('');
+}
+
+// Renderiza errores de busqueda dentro del area de resultados.
+function showResultsError(ui, message) {
+  ui.emptyState.style.display = 'none';
+  ui.resultsMeta.style.display = 'none';
+  ui.results.innerHTML = `<div class="state-no-results">${ICONS.error} ${escapeHtml(message)}</div>`;
 }
 
 // Inserta y muestra el bloque de respuesta asistida por IA.
@@ -263,16 +333,23 @@ function showAI(ui, html) {
   ui.aiCard.style.display = 'block';
 }
 
-// Oculta el bloque de IA cuando el usuario vuelve a editar la busqueda.
+// Oculta el bloque de IA cuando el usuario vuelve a editar la busqueda o apaga el toggle.
 function hideAI(ui) {
   ui.aiCard.style.display = 'none';
+  ui.aiCard.innerHTML = '';
 }
 
-// Activa o desactiva el estado visual de carga del boton de IA.
-function setAIButton(ui, loading) {
+// Activa o desactiva el estado visual de carga del boton Buscar.
+function setSearchButton(ui, loading) {
+  state.searchPending = loading;
+  ui.searchButton.classList.toggle('loading', loading);
+  ui.searchButton.disabled = loading;
+  ui.searchButton.querySelector('span').textContent = loading ? 'Buscando...' : 'Buscar';
+}
+
+// Guarda el estado de carga de la IA.
+function setAIPending(loading) {
   state.aiPending = loading;
-  ui.aiButton.classList.toggle('loading', loading);
-  ui.aiButton.querySelector('span').textContent = loading ? 'Analizando...' : 'Buscar con IA';
 }
 
 // Envuelve contenido de IA con el encabezado estandar de sugerencia.
@@ -285,16 +362,21 @@ function renderCard(item, options = {}) {
   const classes = ['card'];
   if (options.principal) classes.push('card-principal');
   if (options.alt) classes.push('card-alt');
-  const suggestedBadge = options.principal
-    ? '<div class="card-meta"><span class="badge badge-suggested">Sugerido</span></div>'
-    : '';
+
+  const badges = [];
+  const scorePercent = getScorePercent(item);
+  if (options.showScore && scorePercent !== null) {
+    badges.push(`<span class="badge badge-score">Acierto ${scorePercent}%</span>`);
+  }
+  if (options.principal) {
+    badges.push('<span class="badge badge-suggested">Sugerido</span>');
+  }
 
   return `
     <article class="${classes.join(' ')}">
-      ${suggestedBadge}
+      ${badges.length ? `<div class="card-meta">${badges.join('')}</div>` : ''}
       <h2 class="card-title">${escapeHtml(item.nombre)}</h2>
       ${item.descripcion ? `<p class="card-desc">${escapeHtml(item.descripcion)}</p>` : ''}
-      ${options.reason ? `<div class="card-reason">${ICONS.bulb} ${escapeHtml(options.reason)}</div>` : ''}
     </article>`;
 }
 
@@ -304,20 +386,25 @@ function toAICandidate(item) {
     id: item.id,
     nombre: item.nombre,
     descripcion: truncateForAI(item.descripcion, MAX_AI_DESCRIPTION_LENGTH),
+    scorePercent: getScorePercent(item),
   };
 }
 
-// Busca un tramite del catalogo por ID exacto.
+// Busca un tramite por ID, priorizando el resultado de embedding para conservar el score.
 function findById(id) {
+  const embeddingItem = (state.embeddingResults || []).find(item => String(item.id) === String(id));
+  if (embeddingItem) return embeddingItem;
   return (state.catalog || []).find(item => String(item.id) === String(id));
 }
 
-// Convierte una consulta en palabras utiles para ampliar la seleccion de candidatos.
-function tokenize(query) {
-  return normalize(query)
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(word => word.length >= 4 && !STOPWORDS.has(word));
+// Obtiene el porcentaje de similitud semantica para mostrarlo como acierto.
+function getScorePercent(item) {
+  const directPercent = Number(item?.scorePercent);
+  if (Number.isFinite(directPercent)) return Math.max(0, Math.min(100, Math.round(directPercent)));
+
+  const score = Number(item?.score);
+  if (!Number.isFinite(score)) return null;
+  return Math.round(Math.max(0, Math.min(1, score)) * 100);
 }
 
 // Normaliza texto para comparar sin mayusculas ni acentos.

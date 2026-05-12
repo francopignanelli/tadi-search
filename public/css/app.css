@@ -99,6 +99,12 @@ body::before {
   font-weight: 700;
 }
 
+.dialog-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .dialog-close,
 .clear-btn {
   display: inline-flex;
@@ -130,7 +136,8 @@ body::before {
 
 .dialog-close:focus-visible,
 .clear-btn:focus-visible,
-.btn-primary:focus-visible {
+.btn-primary:focus-visible,
+.ai-toggle:focus-visible {
   outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -146,6 +153,12 @@ body::before {
   width: 100%;
   min-width: 0;
   margin-bottom: 16px;
+}
+
+.search-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .field {
@@ -230,6 +243,39 @@ body::before {
 .btn-primary.loading {
   opacity: .65;
   pointer-events: none;
+}
+
+.ai-toggle {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  color: var(--body-secondary);
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s;
+}
+
+.ai-toggle:hover {
+  border-color: var(--info);
+  color: var(--info);
+}
+
+.ai-toggle.active {
+  border-color: var(--info);
+  color: var(--info-dark);
+  background: var(--sky-soft);
+}
+
+.ai-toggle.active:hover {
+  background: #D8F3FB;
 }
 
 .state-empty {
@@ -336,6 +382,12 @@ body::before {
   background: var(--info);
 }
 
+.badge-score {
+  border: 1px solid #ADC3EB;
+  color: var(--info-dark);
+  background: var(--sky-soft);
+}
+
 .card-title {
   margin-bottom: 4px;
   color: var(--body-primary);
@@ -348,25 +400,6 @@ body::before {
   color: var(--body-secondary);
   font-size: 13px;
   line-height: 1.5;
-}
-
-.card-reason {
-  margin-top: 8px;
-  padding-top: 8px;
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  border-top: 1px dashed var(--border-strong);
-  color: var(--info);
-  font-size: 12.5px;
-  font-style: italic;
-}
-
-.card-reason svg {
-  width: 13px;
-  height: 13px;
-  flex-shrink: 0;
-  margin-top: 2px;
 }
 
 .state-no-results {
@@ -504,6 +537,10 @@ body::before {
 
   .search-wrap {
     flex-direction: column;
+  }
+
+  .search-actions {
+    width: 100%;
   }
 
   .btn {

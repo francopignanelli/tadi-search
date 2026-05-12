@@ -8,13 +8,16 @@ const app = express();
 
 const PORT = Number(process.env.PORT || 3002);
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const CATALOG_PATH = path.join(__dirname, 'data', 'catalog_unificado.json');
+const CATALOG_PATH = path.join(__dirname, 'data', 'Listado_tramites_PRD.json');
 
-// Configuracion de Gemini y limites para evitar requests demasiado grandes.
+// Configuracion de servicios y limites para evitar requests demasiado grandes.
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
+const EMBEDDING_SEARCH_URL = process.env.EMBEDDING_SEARCH_URL || 'http://127.0.0.1:8000/buscar';
 const REQUEST_TIMEOUT_MS = 20000;
+const EMBEDDING_TIMEOUT_MS = 30000;
 const MAX_QUERY_LENGTH = 300;
+const MAX_EMBEDDING_CANDIDATES = 50;
 const MAX_AI_CANDIDATES = 6;
 const MAX_AI_DESCRIPTION_LENGTH = 450;
 
@@ -28,6 +31,34 @@ app.use(express.static(PUBLIC_DIR));
 app.get('/api/catalog', (_req, res) => {
   const catalog = getCatalog();
   res.json({ tramites: catalog, total: catalog.length });
+});
+
+// Ejecuta la busqueda semantica por embeddings y devuelve resultados normalizados.
+app.post('/api/search', async (req, res) => {
+  const { q, top_k: requestedTopK } = req.body || {};
+
+  if (!q) {
+    return res.status(400).json({ error: 'Se requiere q' });
+  }
+
+  const query = String(q).slice(0, MAX_QUERY_LENGTH);
+  const topK = clamp(Number(requestedTopK) || 15, 1, MAX_EMBEDDING_CANDIDATES);
+
+  try {
+    const search = await searchWithEmbeddings(query, topK);
+    const catalogById = new Map(getCatalog().map(item => [String(item.id), item]));
+    const resultados = (search.resultados || [])
+      .map(item => normalizeEmbeddingResult(item, catalogById))
+      .filter(item => item.nombre)
+      .slice(0, topK);
+
+    res.json({ query, resultados, total: resultados.length });
+  } catch (error) {
+    res.status(503).json({
+      error: 'No se pudo consultar la búsqueda por embeddings',
+      detail: error.message,
+    });
+  }
 });
 
 // Recibe una consulta y candidatos prefiltrados, y devuelve la sugerencia de Gemini.
@@ -55,18 +86,74 @@ app.listen(PORT, () => {
   console.log(`[tadi-search] http://localhost:${PORT}`);
 });
 
-// Lee catalog_unificado.json una sola vez y reutiliza el resultado desde memoria.
+// Lee Listado_tramites_PRD.json una sola vez y reutiliza el resultado desde memoria.
 function getCatalog() {
   if (catalogCache) return catalogCache;
 
   try {
-    catalogCache = JSON.parse(fs.readFileSync(CATALOG_PATH, 'utf8'));
+    const rawCatalog = JSON.parse(fs.readFileSync(CATALOG_PATH, 'utf8'));
+    catalogCache = normalizeCatalog(rawCatalog);
   } catch (error) {
-    console.error('[tadi-search] Error leyendo data/catalog_unificado.json:', error.message);
+    console.error('[tadi-search] Error leyendo data/Listado_tramites_PRD.json:', error.message);
     catalogCache = [];
   }
 
   return catalogCache;
+}
+
+// Convierte el listado PRD al contrato minimo que usan frontend, embeddings e IA.
+function normalizeCatalog(rawCatalog) {
+  if (!Array.isArray(rawCatalog)) return [];
+
+  return rawCatalog
+    .map(item => ({
+      id: item.id ?? item.ID,
+      nombre: cleanText(item.nombre ?? item.NOMBRE_TRAMITE),
+      descripcion: cleanText(item.descripcion ?? item.DESCRIPCION_CORTA),
+    }))
+    .filter(item => item.id !== undefined && item.id !== null && item.nombre);
+}
+
+// Consulta el servicio local de busqueda semantica.
+async function searchWithEmbeddings(query, topK) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), EMBEDDING_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(EMBEDDING_SEARCH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, top_k: topK }),
+      signal: controller.signal,
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.detail || payload?.error || `HTTP ${response.status}`);
+    }
+
+    return payload;
+  } catch (error) {
+    console.error('[embeddings] Error:', error.message);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Asegura que los resultados semanticos usen el texto oficial del listado PRD.
+function normalizeEmbeddingResult(result, catalogById) {
+  const id = result.id;
+  const catalogItem = catalogById.get(String(id));
+  const score = Number(result.score);
+
+  return {
+    id: catalogItem?.id ?? id,
+    nombre: catalogItem?.nombre ?? cleanText(result.nombre),
+    descripcion: catalogItem?.descripcion ?? cleanText(result.descripcion),
+    score: Number.isFinite(score) ? score : 0,
+    scorePercent: scoreToPercent(score),
+  };
 }
 
 // Consulta Gemini para elegir el tramite mas relevante entre los candidatos recibidos.
@@ -137,7 +224,10 @@ function buildUserPrompt(query, candidates) {
     const description = item.descripcion
       ? `\nDescripcion: ${truncateForAI(item.descripcion, MAX_AI_DESCRIPTION_LENGTH)}`
       : '';
-    return `ID ${item.id}: ${item.nombre}${description}`;
+    const score = Number.isFinite(Number(item.scorePercent))
+      ? `\nAcierto embedding: ${item.scorePercent}%`
+      : '';
+    return `ID ${item.id}: ${item.nombre}${score}${description}`;
   }).join('\n');
 
   return `El usuario busca: "${query}"
@@ -154,9 +244,26 @@ Responde con este JSON:
 
 Reglas:
 - "principal" debe ser el tramite mas relevante.
-- "alternativas" puede tener 0 a 3 tramites adicionales.
+- "alternativas" puede tener 0 a 3 tramites adicionales entre los candidatos.
 - Si ningun candidato es relevante, devolve "principal": null y "alternativas": [].
 - Los IDs deben coincidir exactamente con la lista de candidatos.`;
+}
+
+// Limpia espacios sin transformar ni leer contenido HTML.
+function cleanText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+// Limita un numero al rango esperado.
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+// Convierte similitud coseno en un porcentaje legible de acierto.
+function scoreToPercent(score) {
+  const numericScore = Number(score);
+  if (!Number.isFinite(numericScore)) return 0;
+  return Math.round(clamp(numericScore, 0, 1) * 100);
 }
 
 // Recorta texto largo para controlar tokens enviados a Gemini.

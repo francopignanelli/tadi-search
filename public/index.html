@@ -21,12 +21,15 @@
         </svg>
         <span id="app-title">TADI <strong>Search</strong></span>
       </div>
-      <button class="dialog-close" type="button" aria-label="Cerrar">
-        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
-          <line x1="18" y1="6" x2="6" y2="18"></line>
-          <line x1="6" y1="6" x2="18" y2="18"></line>
-        </svg>
-      </button>
+      <div class="dialog-actions">
+        <button id="ai-toggle" class="ai-toggle active" type="button" aria-pressed="true" title="Activar o desactivar IA">IA</button>
+        <button class="dialog-close" type="button" aria-label="Cerrar">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
     </header>
 
     <section class="dialog-content">
@@ -44,16 +47,15 @@
             </svg>
           </button>
         </div>
-        <button id="ai-btn" class="btn btn-primary" type="button">
-          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9.5 2a2.5 2.5 0 0 1 5 0v.5a2.5 2.5 0 0 1-5 0V2z"></path>
-            <path d="M4.5 8a4 4 0 0 1 7.5-1.9A4 4 0 0 1 19.5 8"></path>
-            <path d="M4.5 8v.5a4 4 0 0 0 4 4h7a4 4 0 0 0 4-4V8"></path>
-            <path d="M8.5 12.5v4a2 2 0 0 0 4 0v-1"></path>
-            <path d="M15.5 12.5v2a2 2 0 0 1-4 0"></path>
-          </svg>
-          <span>Buscar con IA</span>
-        </button>
+        <div class="search-actions">
+          <button id="search-btn" class="btn btn-primary" type="button">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <span>Buscar</span>
+          </button>
+        </div>
       </div>
 
       <div id="empty-state" class="state-empty">
@@ -64,7 +66,7 @@
         <strong>Empezá a escribir</strong>
         <p>
           Los resultados aparecen mientras escribís.<br>
-          Presioná <kbd>Enter</kbd> o <kbd>Buscar con IA</kbd> para una sugerencia inteligente.
+          Presioná <kbd>Enter</kbd> o <kbd>Buscar</kbd> para ordenar por embeddings.
         </p>
       </div>
 
