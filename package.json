@@ -5,10 +5,16 @@
   "description": "Buscador inteligente de tramites TAD con IA",
   "scripts": {
     "start": "node server.js",
-    "start:embeddings": "powershell -ExecutionPolicy Bypass -File ./paquete-embeddings-buscador/start-api.ps1"
+    "start:embeddings": "powershell -ExecutionPolicy Bypass -File ./paquete-embeddings-buscador/start-api.ps1",
+    "ensure:embeddings": "powershell -ExecutionPolicy Bypass -File ./scripts/ensure-embeddings.ps1",
+    "search": "concurrently -k -n embeddings,app -c cyan,green \"npm run ensure:embeddings\" \"wait-on --timeout 300000 http-get://127.0.0.1:8000/health && npm start\""
   },
   "dependencies": {
     "dotenv": "^17.4.1",
     "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "wait-on": "^9.0.10"
   }
 }

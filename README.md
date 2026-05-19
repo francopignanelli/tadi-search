@@ -4,6 +4,8 @@ Mockup funcional para probar un buscador inteligente de tramites TAD. Combina bu
 
 No es una implementacion productiva ni reemplaza el buscador oficial. Esta pensado como material de validacion y presentacion.
 
+Para una explicacion completa de arquitectura, flujo funcional e implementacion por archivo, ver `DOCUMENTACION.md`.
+
 ## Que hace
 
 - Carga el listado PRD desde `data/Listado_tramites_PRD.json`.
@@ -60,22 +62,30 @@ Si `GEMINI_API_KEY` no esta configurada, la busqueda por embeddings sigue funcio
 npm install
 ```
 
-2. Iniciar el servicio de embeddings en una terminal:
+2. Iniciar todo con un solo comando:
+
+```bash
+npm run search
+```
+
+3. Abrir:
+
+```text
+http://localhost:3002
+```
+
+## Ejecutar por separado
+
+Si se quiere levantar cada parte en una terminal distinta:
 
 ```powershell
 npm run start:embeddings
 ```
 
-3. Iniciar la app en otra terminal:
+En otra terminal:
 
 ```bash
 npm start
-```
-
-4. Abrir:
-
-```text
-http://localhost:3002
 ```
 
 ## Flujo de busqueda

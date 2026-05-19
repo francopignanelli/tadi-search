@@ -17,9 +17,11 @@ const EMBEDDING_SEARCH_URL = process.env.EMBEDDING_SEARCH_URL || 'http://127.0.0
 const REQUEST_TIMEOUT_MS = 20000;
 const EMBEDDING_TIMEOUT_MS = 30000;
 const MAX_QUERY_LENGTH = 300;
-const MAX_EMBEDDING_CANDIDATES = 50;
+const MAX_EMBEDDING_CANDIDATES = 600;
 const MAX_AI_CANDIDATES = 6;
 const MAX_AI_DESCRIPTION_LENGTH = 450;
+const EMBEDDING_WEIGHT = 0.55;
+const LEXICAL_WEIGHT = 0.45;
 
 // Cache en memoria para no leer el catalogo en cada request.
 let catalogCache;
@@ -45,12 +47,13 @@ app.post('/api/search', async (req, res) => {
   const topK = clamp(Number(requestedTopK) || 15, 1, MAX_EMBEDDING_CANDIDATES);
 
   try {
-    const search = await searchWithEmbeddings(query, topK);
-    const catalogById = new Map(getCatalog().map(item => [String(item.id), item]));
-    const resultados = (search.resultados || [])
+    const catalog = getCatalog();
+    const catalogById = new Map(catalog.map(item => [String(item.id), item]));
+    const search = await searchWithEmbeddings(query, Math.min(catalog.length, MAX_EMBEDDING_CANDIDATES));
+    const embeddingResults = (search.resultados || [])
       .map(item => normalizeEmbeddingResult(item, catalogById))
-      .filter(item => item.nombre)
-      .slice(0, topK);
+      .filter(Boolean);
+    const resultados = buildHybridResults(query, embeddingResults, catalog, topK);
 
     res.json({ query, resultados, total: resultados.length });
   } catch (error) {
@@ -145,15 +148,84 @@ async function searchWithEmbeddings(query, topK) {
 function normalizeEmbeddingResult(result, catalogById) {
   const id = result.id;
   const catalogItem = catalogById.get(String(id));
+  if (!catalogItem) return null;
+
   const score = Number(result.score);
 
   return {
-    id: catalogItem?.id ?? id,
-    nombre: catalogItem?.nombre ?? cleanText(result.nombre),
-    descripcion: catalogItem?.descripcion ?? cleanText(result.descripcion),
+    id: catalogItem.id,
+    nombre: catalogItem.nombre,
+    descripcion: catalogItem.descripcion,
     score: Number.isFinite(score) ? score : 0,
     scorePercent: scoreToPercent(score),
   };
+}
+
+// Combina similitud semantica con coincidencia textual exacta sobre el PRD.
+function buildHybridResults(query, embeddingResults, catalog, topK) {
+  const byId = new Map();
+
+  for (const item of catalog) {
+    const lexicalScore = scoreLexicalMatch(query, item);
+    if (lexicalScore > 0) {
+      byId.set(String(item.id), {
+        ...item,
+        score: 0,
+        scorePercent: 0,
+        lexicalScore,
+      });
+    }
+  }
+
+  for (const item of embeddingResults) {
+    const id = String(item.id);
+    const existing = byId.get(id);
+    byId.set(id, {
+      ...item,
+      lexicalScore: existing?.lexicalScore ?? scoreLexicalMatch(query, item),
+    });
+  }
+
+  return [...byId.values()]
+    .map(item => ({
+      ...item,
+      hybridScore: (item.score * EMBEDDING_WEIGHT) + (item.lexicalScore * LEXICAL_WEIGHT),
+    }))
+    .sort((a, b) => b.hybridScore - a.hybridScore || b.score - a.score)
+    .slice(0, topK)
+    .map(({ lexicalScore, hybridScore, ...item }) => item);
+}
+
+// Puntua coincidencias por frase y tokens en nombre/descripcion corta.
+function scoreLexicalMatch(query, item) {
+  const normalizedQuery = normalizeForSearch(query);
+  if (!normalizedQuery) return 0;
+
+  const name = normalizeForSearch(item.nombre);
+  const description = normalizeForSearch(item.descripcion);
+  const tokens = normalizedQuery.split(/\s+/).filter(token => token.length >= 2);
+
+  let phraseScore = 0;
+  if (name === normalizedQuery) phraseScore = 1;
+  else if (name.includes(normalizedQuery)) phraseScore = 0.9;
+  else if (description.includes(normalizedQuery)) phraseScore = 0.65;
+
+  if (!tokens.length) return phraseScore;
+
+  if (tokens.length === 1) {
+    const solicitud = `solicitud de ${tokens[0]}`;
+    if (name === solicitud) phraseScore = Math.max(phraseScore, 1);
+    else if (name.startsWith(solicitud)) phraseScore = Math.max(phraseScore, 0.98);
+    else if (name.includes(solicitud)) phraseScore = Math.max(phraseScore, 0.95);
+  }
+
+  const tokenScore = tokens.reduce((total, token) => {
+    if (name.includes(token)) return total + 1;
+    if (description.includes(token)) return total + 0.6;
+    return total;
+  }, 0) / tokens.length;
+
+  return clamp(Math.max(phraseScore, tokenScore * 0.85), 0, 1);
 }
 
 // Consulta Gemini para elegir el tramite mas relevante entre los candidatos recibidos.
@@ -252,6 +324,14 @@ Reglas:
 // Limpia espacios sin transformar ni leer contenido HTML.
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+// Normaliza texto para ranking textual sin depender de mayusculas o acentos.
+function normalizeForSearch(value) {
+  return cleanText(value)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 }
 
 // Limita un numero al rango esperado.

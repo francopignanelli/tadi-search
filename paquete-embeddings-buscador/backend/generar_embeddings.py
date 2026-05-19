@@ -51,7 +51,27 @@ embeddings_por_id = {
     for item in embeddings_guardados
 }
 
+ids_validos = {
+    tramite["id"]
+    for tramite in tramites
+}
+
 hubo_cambios = False
+
+# =========================
+# ELIMINAR OBSOLETOS
+# =========================
+
+for tramite_id in list(embeddings_por_id.keys()):
+
+    if tramite_id not in ids_validos:
+
+        print(
+            f'Eliminando embedding obsoleto ID {tramite_id}'
+        )
+
+        del embeddings_por_id[tramite_id]
+        hubo_cambios = True
 
 # =========================
 # GENERAR / ACTUALIZAR
@@ -101,7 +121,11 @@ if hubo_cambios:
 
     guardar_json(
         ARCHIVO_EMBEDDINGS,
-        list(embeddings_por_id.values())
+        [
+            embeddings_por_id[tramite["id"]]
+            for tramite in tramites
+            if tramite["id"] in embeddings_por_id
+        ]
     )
 
     print("Embeddings actualizados.")
