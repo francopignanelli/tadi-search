@@ -21,15 +21,49 @@ const state = {
   catalog: null,
   fuse: null,
   searchPending: false,
-  aiPending: false,
   aiEnabled: true,
+  predictiveResults: [],
   embeddingResults: [],
+  aiCandidates: [],
   aiSuggestedIds: new Set(),
 };
 
-const MAX_EMBEDDING_RESULTS = 15;
-const MAX_AI_CANDIDATES = 6;
+const SEARCH_CONFIG = {
+  // Cantidad de resultados que se muestran mientras se escribe, antes de presionar Buscar.
+  // Usar null para mostrar todos los resultados que devuelva Fuse.js.
+  predictiveVisibleLimit: null,
+
+  // Porcentaje minimo de coincidencia Fuse para tomar un tramite como candidato al presionar Buscar.
+  // Ejemplo: 46 significa "incluir tramites con Fuse 46% o mas".
+  fuseCandidateMinPercent: 46,
+
+  // Tambien toma como candidato los tramites cuyo nombre contiene todas las palabras exactas buscadas.
+  // Solo revisa el nombre, no la descripcion, para evitar sumar demasiados tramites.
+  includeExactNameWordsForAI: true,
+
+  // Cantidad de resultados semanticos por embeddings que se piden al backend para visualizar/testear.
+  // No implica que todos se envien a Gemini.
+  embeddingVisibleLimit: 50,
+
+  // Cantidad de resultados semanticos por embeddings que se suman como candidatos para Gemini.
+  embeddingCandidatesForAI: 10,
+
+  // Cantidad maxima de candidatos combinados que se mandan a Gemini.
+  // Usar null para enviar todos los que pasen el umbral Fuse + los embeddings configurados.
+  aiCandidatesSentLimit: null,
+
+  // Cantidad de candidatos que se muestran en pantalla despues de presionar Buscar.
+  // Usar null para mostrar todos los candidatos combinados.
+  searchVisibleLimit: null,
+};
+
 const MAX_AI_DESCRIPTION_LENGTH = 450;
+const SEARCH_STOPWORDS = new Set([
+  'quiero', 'necesito', 'tengo', 'hacer', 'realizar', 'iniciar', 'obtener', 'sacar', 'pedir',
+  'tramite', 'tramites', 'tramitar', 'gestion', 'gestionar', 'solicitud', 'solicitar',
+  'una', 'uno', 'unos', 'unas', 'para', 'por', 'con', 'sin', 'del', 'los', 'las', 'que',
+  'como', 'donde', 'cuando', 'sobre', 'este', 'esta', 'esto', 'mis', 'tus', 'sus',
+]);
 
 document.addEventListener('DOMContentLoaded', initApp);
 
@@ -98,7 +132,9 @@ function initFuse(items) {
 function handleInput(ui) {
   const query = ui.input.value.trim();
   ui.clearButton.style.display = query ? 'inline-flex' : 'none';
+  state.predictiveResults = [];
   state.embeddingResults = [];
+  state.aiCandidates = [];
   state.aiSuggestedIds = new Set();
   hideAI(ui);
 
@@ -113,22 +149,28 @@ function handleInput(ui) {
     return;
   }
 
-  showResults(ui, searchLocal(query), { mode: 'predictive' });
+  state.predictiveResults = searchLocal(query, SEARCH_CONFIG.predictiveVisibleLimit);
+  showResults(ui, state.predictiveResults, { mode: 'predictive' });
 }
 
 // Busca tramites localmente usando Fuse.js o una coincidencia simple como respaldo.
-function searchLocal(query) {
+function searchLocal(query, limit = SEARCH_CONFIG.predictiveVisibleLimit) {
+  const searchQuery = buildSearchQuery(query);
+
   if (state.fuse) {
-    return state.fuse.search(query).slice(0, 15).map(result => result.item);
+    return state.fuse.search(searchQuery)
+      .slice(0, getLimit(limit))
+      .map((result, index) => enrichPredictiveResult(result.item, result.score, index + 1));
   }
 
-  const normalized = normalize(query);
+  const normalized = normalize(searchQuery);
   return (state.catalog || [])
     .filter(item => normalize(item.nombre).includes(normalized) || normalize(item.descripcion).includes(normalized))
-    .slice(0, 15);
+    .slice(0, getLimit(limit))
+    .map((item, index) => enrichPredictiveResult(item, null, index + 1));
 }
 
-// Ejecuta la busqueda por embeddings y, si esta activo, pide la sugerencia de IA.
+// Ejecuta Fuse por umbral + embeddings top N y, si esta activo, pide la sugerencia de IA.
 async function runSearch(ui) {
   const query = ui.input.value.trim();
   if (!query || state.searchPending) return;
@@ -140,32 +182,38 @@ async function runSearch(ui) {
   }
 
   hideAI(ui);
+  state.predictiveResults = searchLocal(query, SEARCH_CONFIG.predictiveVisibleLimit);
+  state.embeddingResults = [];
+  state.aiCandidates = [];
   state.aiSuggestedIds = new Set();
   setSearchButton(ui, true);
   showEmbeddingLoading(ui);
 
   try {
-    const results = await searchByEmbedding(query);
-    state.embeddingResults = results;
-    showResults(ui, results, { mode: 'embedding' });
+    state.embeddingResults = await searchByEmbedding(query);
+    state.aiCandidates = buildAICandidates(query, state.predictiveResults, state.embeddingResults);
 
-    if (state.aiEnabled && results.length) {
-      await requestAISuggestion(ui, query, results);
+    if (state.aiEnabled && state.aiCandidates.length) {
+      showResults(ui, state.aiCandidates, { mode: 'candidate' });
+      await requestAISuggestion(ui, query, state.aiCandidates);
+    } else {
+      showResults(ui, getEmbeddingResultsForDisplay(), { mode: 'embedding' });
     }
   } catch (error) {
     state.embeddingResults = [];
+    state.aiCandidates = state.predictiveResults.map((item, index) => ({ ...item, aiCandidateRank: index + 1 }));
     showResultsError(ui, error.message || 'No se pudo completar la búsqueda por embeddings.');
   } finally {
     setSearchButton(ui, false);
   }
 }
 
-// Llama al backend Node, que a su vez consulta el servicio local de embeddings.
+// Llama al backend Node, que calcula la busqueda semantica integrada.
 async function searchByEmbedding(query) {
   const response = await fetch('/api/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ q: query, top_k: MAX_EMBEDDING_RESULTS }),
+    body: JSON.stringify({ q: query, top_k: SEARCH_CONFIG.embeddingVisibleLimit }),
   });
   const data = await response.json();
 
@@ -173,21 +221,54 @@ async function searchByEmbedding(query) {
     throw new Error(data.error || 'No se pudo consultar la búsqueda por embeddings.');
   }
 
-  return data.resultados || [];
+  return (data.resultados || [])
+    .map((item, index) => enrichEmbeddingResult(item, index + 1));
 }
 
-// Pide a Gemini una sugerencia limitada a los resultados filtrados por embeddings.
-async function requestAISuggestion(ui, query, results) {
-  const candidates = results.slice(0, MAX_AI_CANDIDATES);
+// Unifica candidatos sin repetir segun SEARCH_CONFIG: Fuse por umbral y luego embeddings top N.
+function buildAICandidates(query, predictiveResults, embeddingResults) {
+  const byId = new Map();
 
-  setAIPending(true);
+  for (const item of getFuseCandidatesForSearch(predictiveResults, query)) {
+    byId.set(String(item.id), { ...item });
+  }
+
+  for (const item of embeddingResults.slice(0, SEARCH_CONFIG.embeddingCandidatesForAI)) {
+    const id = String(item.id);
+    const existing = byId.get(id);
+    byId.set(id, existing ? mergeCandidate(existing, item) : { ...item });
+  }
+
+  return [...byId.values()]
+    .slice(0, getLimit(SEARCH_CONFIG.aiCandidatesSentLimit))
+    .map((item, index) => ({ ...item, aiCandidateRank: index + 1 }));
+}
+
+// Devuelve resultados de Fuse por porcentaje o por palabras exactas en el nombre.
+function getFuseCandidatesForSearch(predictiveResults, query) {
+  const minPercent = Number(SEARCH_CONFIG.fuseCandidateMinPercent);
+  if (!Number.isFinite(minPercent) && !SEARCH_CONFIG.includeExactNameWordsForAI) return predictiveResults;
+
+  return predictiveResults
+    .filter(item => {
+      const passesFuseThreshold = Number.isFinite(minPercent) && getFusePercent(item, true) >= minPercent;
+      const passesExactName = SEARCH_CONFIG.includeExactNameWordsForAI && hasExactNameWords(query, item);
+      if (passesExactName) item.exactNameWords = true;
+      return passesFuseThreshold || passesExactName;
+    });
+}
+
+// Pide a Gemini una sugerencia usando candidatos recuperados por Fuse y embeddings.
+async function requestAISuggestion(ui, query, candidates) {
+  const aiCandidates = candidates.slice(0, getLimit(SEARCH_CONFIG.aiCandidatesSentLimit));
+
   showAI(ui, aiShell(`<div class="ai-loading">${ICONS.loader} Analizando con IA...</div>`));
 
   try {
     const response = await fetch('/api/ai', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q: query, candidatos: candidates.map(toAICandidate) }),
+      body: JSON.stringify({ q: query, candidatos: aiCandidates.map(toAICandidate) }),
     });
     const data = await response.json();
 
@@ -200,8 +281,6 @@ async function requestAISuggestion(ui, query, results) {
   } catch (error) {
     if (!state.aiEnabled) return;
     showAI(ui, aiShell(`<div class="ai-error">${ICONS.error} ${escapeHtml(error.message || 'Error al consultar la IA.')}</div>`));
-  } finally {
-    setAIPending(false);
   }
 }
 
@@ -228,25 +307,47 @@ function renderAISuggestion(ui, data) {
     content += `<div class="ai-exp">${ICONS.info} ${escapeHtml(data.explicacion)}</div>`;
   }
   if (principal) {
-    content += `<div class="ai-principal-wrap">${renderCard(principal, { principal: true, showScore: true })}</div>`;
+    content += `<div class="ai-principal-wrap">${renderCard(principal, {
+      principal: true,
+      showDebug: true,
+      showFusePercent: true,
+      showEmbeddingPercent: true,
+    })}</div>`;
   }
   if (alternatives.length) {
     content += '<div class="alts-label">También puede ser:</div><div class="alts-list">';
-    content += alternatives.map(alternative => renderCard(alternative, { alt: true, showScore: true })).join('');
+    content += alternatives.map(alternative => renderCard(alternative, {
+      alt: true,
+      showDebug: true,
+      showFusePercent: true,
+      showEmbeddingPercent: true,
+    })).join('');
     content += '</div>';
   }
 
   state.aiSuggestedIds = suggestedIds;
   showAI(ui, aiShell(content));
-  showResults(ui, getVisibleEmbeddingResults(), { mode: 'embedding' });
+  showResults(ui, getVisibleCandidates(), { mode: 'candidate' });
 }
 
-// Devuelve los resultados de embeddings sin los tramites ya mostrados por IA.
-function getVisibleEmbeddingResults() {
-  if (!state.aiSuggestedIds.size) return state.embeddingResults;
+// Devuelve los candidatos sin los tramites ya mostrados por IA.
+function getVisibleCandidates() {
+  if (!state.aiSuggestedIds.size) return state.aiCandidates;
 
-  return state.embeddingResults
+  return state.aiCandidates
     .filter(item => !state.aiSuggestedIds.has(String(item.id)));
+}
+
+// Devuelve todos los resultados de embeddings, agregando datos de Fuse cuando el tramite tambien matcheo en predictiva.
+function getEmbeddingResultsForDisplay() {
+  const predictiveById = new Map(
+    (state.predictiveResults || []).map(item => [String(item.id), item])
+  );
+
+  return (state.embeddingResults || []).map(item => {
+    const predictiveItem = predictiveById.get(String(item.id));
+    return predictiveItem ? mergeCandidate(predictiveItem, item) : item;
+  });
 }
 
 // Arma el conjunto de IDs ya representados en la tarjeta de IA.
@@ -269,7 +370,7 @@ function toggleAI(ui) {
     state.aiSuggestedIds = new Set();
     hideAI(ui);
     if (state.embeddingResults.length) {
-      showResults(ui, state.embeddingResults, { mode: 'embedding' });
+      showResults(ui, getEmbeddingResultsForDisplay(), { mode: 'embedding' });
     }
   }
 }
@@ -294,11 +395,11 @@ function showLoadingCatalog(ui) {
   ui.results.innerHTML = `<div class="ai-loading">${ICONS.loader} Cargando catálogo...</div>`;
 }
 
-// Muestra un estado transitorio mientras se consulta el ranking semantico.
+// Muestra un estado transitorio mientras se consultan candidatos predictivos y semanticos.
 function showEmbeddingLoading(ui) {
   ui.emptyState.style.display = 'none';
   ui.resultsMeta.style.display = 'none';
-  ui.results.innerHTML = `<div class="ai-loading">${ICONS.loader} Buscando por embeddings...</div>`;
+  ui.results.innerHTML = `<div class="ai-loading">${ICONS.loader} Buscando candidatos...</div>`;
 }
 
 // Renderiza la lista de resultados o el mensaje de ausencia de resultados.
@@ -307,17 +408,28 @@ function showResults(ui, results, context = {}) {
 
   if (!results.length) {
     ui.resultsMeta.style.display = 'none';
-    const message = context.mode === 'embedding'
-      ? 'Sin resultados por embeddings. Intentá con otras palabras.'
+    const message = context.mode === 'candidate'
+      ? 'Sin candidatos. Intentá con otras palabras.'
       : 'Sin resultados. Intentá con otras palabras o presioná Buscar.';
     ui.results.innerHTML = `<div class="state-no-results">${ICONS.empty} ${message}</div>`;
     return;
   }
 
-  const suffix = context.mode === 'embedding' ? ' por embeddings' : '';
+  const suffix = context.mode === 'candidate'
+    ? ' candidatos para IA'
+    : context.mode === 'predictive'
+      ? ' predictivos'
+      : context.mode === 'embedding'
+        ? ' por embeddings'
+      : '';
   ui.resultsMeta.style.display = 'block';
-  ui.resultsMeta.textContent = `${results.length} resultado${results.length !== 1 ? 's' : ''} encontrado${results.length !== 1 ? 's' : ''}${suffix}`;
-  ui.results.innerHTML = results.map(item => renderCard(item, { showScore: context.mode === 'embedding' })).join('');
+  const visibleResults = getVisibleResults(results, context);
+  ui.resultsMeta.textContent = `${visibleResults.length} resultado${visibleResults.length !== 1 ? 's' : ''} encontrado${visibleResults.length !== 1 ? 's' : ''}${suffix}`;
+  ui.results.innerHTML = visibleResults.map(item => renderCard(item, {
+    showDebug: context.mode === 'candidate' || context.mode === 'predictive' || context.mode === 'embedding',
+    showFusePercent: context.mode === 'candidate' || context.mode === 'predictive' || context.mode === 'embedding',
+    showEmbeddingPercent: context.mode === 'candidate' || context.mode === 'embedding',
+  })).join('');
 }
 
 // Renderiza errores de busqueda dentro del area de resultados.
@@ -347,11 +459,6 @@ function setSearchButton(ui, loading) {
   ui.searchButton.querySelector('span').textContent = loading ? 'Buscando...' : 'Buscar';
 }
 
-// Guarda el estado de carga de la IA.
-function setAIPending(loading) {
-  state.aiPending = loading;
-}
-
 // Envuelve contenido de IA con el encabezado estandar de sugerencia.
 function aiShell(content) {
   return `<div class="ai-header">${ICONS.brain} Sugerencia IA</div>${content}`;
@@ -364,10 +471,30 @@ function renderCard(item, options = {}) {
   if (options.alt) classes.push('card-alt');
 
   const badges = [];
-  const scorePercent = getScorePercent(item);
-  if (options.showScore && scorePercent !== null) {
-    badges.push(`<span class="badge badge-score">Acierto ${scorePercent}%</span>`);
+  if (options.showDebug && Number.isFinite(Number(item.fuseRank))) {
+    badges.push(`<span class="badge badge-fuse">Predictiva #${Number(item.fuseRank)}</span>`);
   }
+
+  if (options.showFusePercent) {
+    badges.push(`<span class="badge badge-fuse-score">Fuse ${getFusePercent(item, true)}%</span>`);
+  }
+
+  if (options.showDebug && Number.isFinite(Number(item.embeddingRank))) {
+    badges.push(`<span class="badge badge-score">Embedding #${Number(item.embeddingRank)}</span>`);
+  }
+
+  if (options.showEmbeddingPercent) {
+    badges.push(`<span class="badge badge-score">Embedding ${getScorePercent(item, true)}%</span>`);
+  }
+
+  if (options.showDebug && Number.isFinite(Number(item.aiCandidateRank))) {
+    badges.push(`<span class="badge badge-candidate">IA cand. #${Number(item.aiCandidateRank)}</span>`);
+  }
+
+  if (options.showDebug && item.exactNameWords) {
+    badges.push('<span class="badge badge-text-match">Nombre exacto</span>');
+  }
+
   if (options.principal) {
     badges.push('<span class="badge badge-suggested">Sugerido</span>');
   }
@@ -380,31 +507,123 @@ function renderCard(item, options = {}) {
     </article>`;
 }
 
+// Agrega metadata de testing para resultados recuperados por Fuse.
+function enrichPredictiveResult(item, fuseScore, fuseRank) {
+  return {
+    ...item,
+    fuseRank,
+    fuseScore: Number.isFinite(Number(fuseScore)) ? Number(fuseScore) : null,
+    sources: ['fuse'],
+  };
+}
+
+// Agrega metadata de testing para resultados recuperados por embeddings.
+function enrichEmbeddingResult(item, embeddingRank) {
+  return {
+    ...item,
+    embeddingRank,
+    sources: ['embedding'],
+  };
+}
+
+// Fusiona metadata cuando un tramite aparece por Fuse y embeddings.
+function mergeCandidate(left, right) {
+  return {
+    ...left,
+    ...right,
+    fuseRank: left.fuseRank ?? right.fuseRank,
+    fuseScore: left.fuseScore ?? right.fuseScore,
+    embeddingRank: left.embeddingRank ?? right.embeddingRank,
+    score: right.score ?? left.score,
+    scorePercent: right.scorePercent ?? left.scorePercent,
+    sources: [...new Set([...(left.sources || []), ...(right.sources || [])])],
+  };
+}
+
 // Reduce cada candidato al minimo necesario antes de enviarlo al backend/IA.
 function toAICandidate(item) {
   return {
     id: item.id,
     nombre: item.nombre,
     descripcion: truncateForAI(item.descripcion, MAX_AI_DESCRIPTION_LENGTH),
-    scorePercent: getScorePercent(item),
+    keywords: Array.isArray(item.keywords) ? item.keywords : [],
+    scorePercent: getScorePercent(item, true),
+    fusePercent: getFusePercent(item, true),
+    embeddingRank: Number.isFinite(Number(item.embeddingRank)) ? Number(item.embeddingRank) : null,
+    fuseRank: Number.isFinite(Number(item.fuseRank)) ? Number(item.fuseRank) : null,
+    fuseScore: Number.isFinite(Number(item.fuseScore)) ? Number(item.fuseScore) : null,
+    sources: Array.isArray(item.sources) ? item.sources : [],
+    aiCandidateRank: Number.isFinite(Number(item.aiCandidateRank)) ? Number(item.aiCandidateRank) : null,
   };
 }
 
-// Busca un tramite por ID, priorizando el resultado de embedding para conservar el score.
+// Busca un tramite por ID, priorizando candidatos enriquecidos para conservar metadata.
 function findById(id) {
+  const candidateItem = (state.aiCandidates || []).find(item => String(item.id) === String(id));
+  if (candidateItem) return candidateItem;
   const embeddingItem = (state.embeddingResults || []).find(item => String(item.id) === String(id));
   if (embeddingItem) return embeddingItem;
+  const predictiveItem = (state.predictiveResults || []).find(item => String(item.id) === String(id));
+  if (predictiveItem) return predictiveItem;
   return (state.catalog || []).find(item => String(item.id) === String(id));
 }
 
 // Obtiene el porcentaje de similitud semantica para mostrarlo como acierto.
-function getScorePercent(item) {
+function getScorePercent(item, fallbackToZero = false) {
   const directPercent = Number(item?.scorePercent);
   if (Number.isFinite(directPercent)) return Math.max(0, Math.min(100, Math.round(directPercent)));
 
   const score = Number(item?.score);
-  if (!Number.isFinite(score)) return null;
+  if (!Number.isFinite(score)) return fallbackToZero ? 0 : null;
   return Math.round(Math.max(0, Math.min(1, score)) * 100);
+}
+
+// Convierte el score de Fuse en una precision visual: en Fuse, mas bajo es mejor.
+function getFusePercent(item, fallbackToZero = false) {
+  const score = Number(item?.fuseScore);
+  if (!Number.isFinite(score)) return fallbackToZero ? 0 : null;
+  return Math.round(Math.max(0, Math.min(1, 1 - score)) * 100);
+}
+
+// Detecta si el nombre del tramite contiene todas las palabras relevantes de la busqueda.
+function hasExactNameWords(query, item) {
+  const queryTokens = tokenizeExactWords(query);
+  if (!queryTokens.length) return false;
+
+  const nameTokens = new Set(tokenizeExactWords(item.nombre));
+  return queryTokens.every(token => nameTokens.has(token));
+}
+
+// Tokeniza palabras exactas para la regla sobre nombre, ignorando palabras muy cortas.
+function tokenizeExactWords(value) {
+  return normalize(value)
+    .split(/[^a-z0-9]+/i)
+    .filter(token => token.length >= 3 && !SEARCH_STOPWORDS.has(token));
+}
+
+// Reduce una frase natural a terminos utiles para Fuse, quitando palabras de intencion.
+function buildSearchQuery(value) {
+  const terms = tokenizeExactWords(value);
+  return terms.length ? terms.join(' ') : String(value || '').trim();
+}
+
+// Aplica el limite visual segun el modo actual de resultados.
+function getVisibleResults(results, context) {
+  if (context.mode === 'candidate') {
+    return results.slice(0, getLimit(SEARCH_CONFIG.searchVisibleLimit));
+  }
+
+  if (context.mode === 'predictive') {
+    return results.slice(0, getLimit(SEARCH_CONFIG.predictiveVisibleLimit));
+  }
+
+  return results;
+}
+
+// Convierte null/undefined en "sin limite" para centralizar la configuracion.
+function getLimit(value) {
+  if (value === null || value === undefined) return Infinity;
+  return Number.isFinite(Number(value)) ? Number(value) : Infinity;
 }
 
 // Normaliza texto para comparar sin mayusculas ni acentos.

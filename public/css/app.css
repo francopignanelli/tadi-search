@@ -388,6 +388,36 @@ body::before {
   background: var(--sky-soft);
 }
 
+.badge-fuse {
+  border: 1px solid #D5B85F;
+  color: #6B5300;
+  background: #FFF5CC;
+}
+
+.badge-fuse-score {
+  border: 1px solid #E2D49A;
+  color: #6B5300;
+  background: #FFFBEA;
+}
+
+.badge-candidate {
+  border: 1px solid #C7B7E8;
+  color: #4E347A;
+  background: #F2ECFF;
+}
+
+.badge-text-match {
+  border: 1px solid #BFD6B8;
+  color: #245A22;
+  background: #EEF8EA;
+}
+
+.badge-ranking {
+  border: 1px solid #B7D6C2;
+  color: #115B34;
+  background: #EAF7EF;
+}
+
 .card-title {
   margin-bottom: 4px;
   color: var(--body-primary);

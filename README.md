@@ -1,108 +1,157 @@
 # TADI Search Mockup
 
-Mockup funcional para probar un buscador inteligente de tramites TAD. Combina busqueda predictiva en el navegador, ranking semantico por embeddings y una sugerencia opcional de IA.
+Mockup funcional para probar una mejora del buscador de tramites TAD. La app combina tres capas:
 
-No es una implementacion productiva ni reemplaza el buscador oficial. Esta pensado como material de validacion y presentacion.
+1. Busqueda predictiva con Fuse.js.
+2. Busqueda semantica por embeddings.
+3. Analisis y respuesta con IA usando Gemini.
 
-Para una explicacion completa de arquitectura, flujo funcional e implementacion por archivo, ver `DOCUMENTACION.md`.
+No es una implementacion productiva ni reemplaza el buscador oficial. Esta pensado para validacion, testing y presentacion.
 
-## Que hace
-
-- Carga el listado PRD desde `data/Listado_tramites_PRD.json`.
-- Mantiene busqueda predictiva con Fuse.js mientras se escribe.
-- Al presionar Enter o Buscar, consulta el ranking por embeddings.
-- Muestra el porcentaje de acierto semantico en cada tarjeta del resultado por embeddings.
-- Si el toggle `IA` esta activo, envia candidatos filtrados por embeddings a Gemini.
-- Gemini devuelve un tramite principal y hasta 3 alternativas.
-
-## Datos
-
-El unico catalogo de tramites es `data/Listado_tramites_PRD.json`. Solo se leen estos campos:
-
-```json
-{
-  "ID": 3,
-  "NOMBRE_TRAMITE": "...",
-  "DESCRIPCION_CORTA": "..."
-}
-```
-
-`DESCRIPCION_HTML` no se usa para busqueda predictiva, embeddings ni sugerencias de IA.
-
-## Como esta construida
-
-- Servidor Node.js con Express.
-- Interfaz estatica en `public/`.
-- Servicio local FastAPI para embeddings en `paquete-embeddings-buscador/`.
-- Fuse.js para resultados predictivos en el navegador.
-- Google Gemini para la sugerencia opcional.
-
-El servidor Node expone:
-
-- `GET /api/catalog`: devuelve el listado PRD normalizado.
-- `POST /api/search`: consulta el servicio local de embeddings y devuelve resultados con `score` y `scorePercent`.
-- `POST /api/ai`: recibe la consulta y candidatos ya filtrados por embeddings, consulta Gemini y devuelve una recomendacion estructurada.
-
-## Variables de entorno
-
-```text
-GEMINI_API_KEY=...
-GEMINI_MODEL=gemini-2.5-flash-lite
-EMBEDDING_SEARCH_URL=http://127.0.0.1:8000/buscar
-PORT=3002
-```
-
-Si `GEMINI_API_KEY` no esta configurada, la busqueda por embeddings sigue funcionando y la sugerencia de IA muestra el aviso correspondiente.
-
-## Ejecutar
-
-1. Instalar dependencias Node:
+## Ejecutar localmente
 
 ```bash
 npm install
+npm start
 ```
 
-2. Iniciar todo con un solo comando:
-
-```bash
-npm run search
-```
-
-3. Abrir:
+Abrir:
 
 ```text
 http://localhost:3002
 ```
 
-## Ejecutar por separado
+Ya no hace falta levantar un servicio Python/FastAPI separado. Los embeddings corren desde Node.js.
 
-Si se quiere levantar cada parte en una terminal distinta:
+## Variables de entorno
 
-```powershell
-npm run start:embeddings
+Crear `.env` a partir de `.env.example`:
+
+```text
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-2.5-flash-lite
+EMBEDDING_MODEL=Xenova/paraphrase-multilingual-MiniLM-L12-v2
+PORT=3002
 ```
 
-En otra terminal:
+Si `GEMINI_API_KEY` no esta configurada, la busqueda predictiva y la busqueda por embeddings siguen funcionando. La sugerencia con IA muestra un aviso.
 
-```bash
-npm start
+## Configuracion de busqueda
+
+Los valores principales estan en `public/js/app.js`, dentro de `SEARCH_CONFIG`:
+
+```js
+const SEARCH_CONFIG = {
+  predictiveVisibleLimit: null,
+  fuseCandidateMinPercent: 46,
+  includeExactNameWordsForAI: true,
+  embeddingVisibleLimit: 50,
+  embeddingCandidatesForAI: 10,
+  aiCandidatesSentLimit: null,
+  searchVisibleLimit: null,
+};
 ```
 
-## Flujo de busqueda
+- `predictiveVisibleLimit`: resultados visibles mientras se escribe. `null` muestra todos.
+- `fuseCandidateMinPercent`: porcentaje minimo de Fuse para entrar como candidato al presionar Buscar.
+- `includeExactNameWordsForAI`: tambien incluye tramites cuyo nombre contiene todas las palabras exactas de la busqueda.
+- `embeddingVisibleLimit`: resultados de embeddings que se piden para visualizar y testear.
+- `embeddingCandidatesForAI`: primeros resultados de embeddings que se suman como candidatos IA.
+- `aiCandidatesSentLimit`: maximo de candidatos enviados a Gemini. `null` no corta despues de aplicar filtros.
+- `searchVisibleLimit`: resultados visibles despues de presionar Buscar. `null` muestra todos los candidatos/resultados del modo activo.
 
-1. Mientras se escribe, Fuse.js muestra coincidencias predictivas desde el listado PRD.
-2. Al presionar Enter o Buscar, Node llama al servicio local de embeddings.
-3. La app muestra los tramites ordenados por similitud semantica y el porcentaje de acierto.
-4. Si `IA` esta activo, la app envia hasta 6 resultados por embeddings a Gemini.
-5. Gemini elige el tramite principal y hasta 3 alternativas, siempre dentro de esos candidatos.
+## Flujo resumido
+
+### 1. Fuse.js
+
+Se ejecuta en el navegador mientras la persona escribe.
+Antes de buscar, la app quita palabras de intencion como `quiero`, `hacer`, `necesito` o `tramite`, para que frases naturales busquen los terminos importantes.
+
+Campos usados:
+
+- `nombre`
+- `descripcion`
+
+Orden:
+
+- Fuse.js ordena por menor score interno.
+- En pantalla se muestra como `Fuse XX%`, donde mayor porcentaje es mejor.
+
+Uso:
+
+- Muestra resultados predictivos.
+- Al presionar Buscar, aporta candidatos si `Fuse >= 46%`.
+- Tambien aporta candidatos si `includeExactNameWordsForAI` esta activo y el nombre contiene todas las palabras exactas buscadas.
+
+### 2. Embeddings
+
+Se ejecuta desde Node.js contra `data/embeddings_tramites.json`.
+
+Campos usados para generar embeddings:
+
+- `nombre`
+- `descripcion`
+- `keywords`, si existen
+
+Orden:
+
+- Similitud coseno descendente.
+- En pantalla se muestra como `Embedding XX%`.
+
+Uso:
+
+- Con IA apagada, se muestran hasta `embeddingVisibleLimit` resultados.
+- Con IA encendida, se suman como candidatos IA los primeros `embeddingCandidatesForAI`.
+
+### 3. IA
+
+Gemini recibe solamente candidatos filtrados, no todo el catalogo.
+
+Candidatos IA:
+
+- Fuse: resultados con `Fuse >= fuseCandidateMinPercent` o coincidencia exacta de palabras en nombre.
+- Embeddings: top `embeddingCandidatesForAI`.
+- Se eliminan duplicados por `id`.
+
+Gemini recibe por candidato:
+
+- `id`
+- `nombre`
+- `descripcion` recortada
+- `fuseRank`
+- `fuseScore`
+- `embeddingRank`
+- `scorePercent`
+- `sources`
+- `keywords`
+
+Orden:
+
+- El frontend arma la lista con candidatos Fuse primero y luego suma embeddings no repetidos.
+- Gemini elige el tramite principal y hasta 3 alternativas.
+
+## Estructura
+
+```text
+server.js
+src/catalog.js
+src/gemini-service.js
+src/semantic-search.js
+src/text-utils.js
+scripts/generate-embeddings.js
+public/index.html
+public/css/app.css
+public/js/app.js
+data/Listado_tramites_PRD.json
+data/embeddings_tramites.json
+```
 
 ## Regenerar embeddings
 
-Si cambia `data/Listado_tramites_PRD.json`, regenerar la base vectorizada:
+Si cambia `data/Listado_tramites_PRD.json`:
 
-```powershell
-cd paquete-embeddings-buscador
-.\.venv\Scripts\python.exe backend\generar_embeddings.py
+```bash
+npm run generate:embeddings
 ```
 
-El generador usa `NOMBRE_TRAMITE` y `DESCRIPCION_CORTA`; ignora `DESCRIPCION_HTML`.
+El generador usa `NOMBRE_TRAMITE` y `DESCRIPCION_CORTA`. No usa `DESCRIPCION_HTML`.
