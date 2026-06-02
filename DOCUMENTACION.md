@@ -44,11 +44,26 @@ src/semantic-search.js
 src/gemini-service.js
   Construye prompts, llama a Gemini y normaliza la respuesta.
 
+src/ai-usage-log.js
+  Registra que se envio a Gemini y cuantos tokens reporto la API.
+
 src/text-utils.js
   Utilidades compartidas de texto, porcentajes y limites.
 
 public/js/app.js
   Controla UI, Fuse.js, armado de candidatos, render de tarjetas y llamada a endpoints.
+
+public/css/app.css
+  Estilos base compartidos y vista de testing con etiquetas de ranking.
+
+public/production/index.html
+  Entrada visual limpia para presentar la app sin etiquetas de testing.
+
+public/production/styles.css
+  Capa visual de la vista de presentacion TAD.
+
+public/production/assets/
+  Imagenes e iconos usados solo por la vista de presentacion.
 
 scripts/generate-embeddings.js
   Regenera data/embeddings_tramites.json.
@@ -256,6 +271,12 @@ Datos enviados por candidato:
 - `scorePercent`
 - `sources`
 - `aiCandidateRank`
+
+Registro de consumo:
+
+- Cada llamado real a Gemini se registra en `logs/ai-usage.md`.
+- Tambien se guarda una version estructurada en `logs/ai-usage.ndjson`.
+- El log incluye fecha, modelo, candidatos enviados y `usageMetadata` de Gemini.
 
 Respuesta esperada:
 

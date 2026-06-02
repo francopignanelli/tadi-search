@@ -3,10 +3,12 @@ const SELECTORS = {
   clearButton: '#clear-btn',
   searchButton: '#search-btn',
   aiToggle: '#ai-toggle',
+  suggestions: '#autocomplete-suggestions',
   emptyState: '#empty-state',
   aiCard: '#ai-card',
   resultsMeta: '#results-meta',
   results: '#results',
+  pagination: '#pagination',
 };
 
 const ICONS = {
@@ -26,7 +28,15 @@ const state = {
   embeddingResults: [],
   aiCandidates: [],
   aiSuggestedIds: new Set(),
+  autocompleteSuggestions: [],
+  autocompleteIndex: -1,
+  skipAutocompleteOnce: false,
+  initialResults: [],
+  initialPage: 1,
 };
+
+const APP_MODE = document.body?.dataset?.appMode === 'production' ? 'production' : 'testing';
+const IS_PRODUCTION_VIEW = APP_MODE === 'production';
 
 const SEARCH_CONFIG = {
   // Cantidad de resultados que se muestran mientras se escribe, antes de presionar Buscar.
@@ -55,9 +65,24 @@ const SEARCH_CONFIG = {
   // Cantidad de candidatos que se muestran en pantalla despues de presionar Buscar.
   // Usar null para mostrar todos los candidatos combinados.
   searchVisibleLimit: null,
+
+  // Cantidad de tramites por pagina cuando todavia no hay texto escrito.
+  initialPageSize: 10,
 };
 
 const MAX_AI_DESCRIPTION_LENGTH = 450;
+const INITIAL_POPULAR_NAMES = [
+  'solicitud de rubrica de documentacion laboral para pymes y empleadores hasta 49 empleados',
+  'contrato locacion de servicios - clausula modificatoria',
+  'solicitud de certificado de domicilio real en caba',
+  'presentacion agregar',
+  'actualizacion del registro de empleadores',
+  'solicitud de certificado de deudor alimentario',
+  'solicitud de licencia de inhumacion',
+  'contrato locacion de servicios',
+  'inscripcion en el registro de defuncion para hospitales privados',
+  'reempadronamiento de consorcios',
+];
 const SEARCH_STOPWORDS = new Set([
   'quiero', 'necesito', 'tengo', 'hacer', 'realizar', 'iniciar', 'obtener', 'sacar', 'pedir',
   'tramite', 'tramites', 'tramitar', 'gestion', 'gestionar', 'solicitud', 'solicitar',
@@ -73,7 +98,11 @@ function initApp() {
 
   ui.input.addEventListener('input', () => handleInput(ui));
   ui.input.addEventListener('keydown', event => {
+    if (handleAutocompleteKeydown(ui, event)) return;
     if (event.key === 'Enter') runSearch(ui);
+  });
+  ui.input.addEventListener('blur', () => {
+    window.setTimeout(() => hideAutocomplete(ui), 120);
   });
   ui.clearButton.addEventListener('click', () => {
     ui.input.value = '';
@@ -82,9 +111,13 @@ function initApp() {
   });
   ui.searchButton.addEventListener('click', () => runSearch(ui));
   ui.aiToggle.addEventListener('click', () => toggleAI(ui));
+  ui.suggestions.addEventListener('mousedown', event => applyAutocompleteSelection(ui, event));
+  ui.pagination.addEventListener('click', event => handlePaginationClick(ui, event));
 
   updateAIToggle(ui);
-  loadCatalog();
+  loadCatalog().then(() => {
+    if (!ui.input.value.trim()) showInitialCatalog(ui, 1);
+  });
   ui.input.focus();
 }
 
@@ -136,21 +169,228 @@ function handleInput(ui) {
   state.embeddingResults = [];
   state.aiCandidates = [];
   state.aiSuggestedIds = new Set();
+  state.autocompleteIndex = -1;
+  state.initialPage = 1;
   hideAI(ui);
 
   if (!query) {
-    showEmpty(ui);
+    hideAutocomplete(ui);
+    showInitialCatalog(ui, 1);
     return;
   }
 
   if (!state.catalog) {
+    hideAutocomplete(ui);
     showLoadingCatalog(ui);
     loadCatalog().then(() => handleInput(ui));
     return;
   }
 
   state.predictiveResults = searchLocal(query, SEARCH_CONFIG.predictiveVisibleLimit);
+  if (state.skipAutocompleteOnce) {
+    state.skipAutocompleteOnce = false;
+    hideAutocomplete(ui);
+  } else {
+    renderAutocomplete(ui, state.predictiveResults);
+  }
   showResults(ui, state.predictiveResults, { mode: 'predictive' });
+}
+
+// Muestra el catalogo completo paginado cuando todavia no hay busqueda escrita.
+function showInitialCatalog(ui, page = state.initialPage) {
+  if (!state.catalog) {
+    showLoadingCatalog(ui);
+    loadCatalog().then(() => showInitialCatalog(ui, page));
+    return;
+  }
+
+  state.initialResults = buildInitialCatalogResults();
+  state.initialPage = getSafePage(page, state.initialResults.length);
+
+  const pageSize = SEARCH_CONFIG.initialPageSize;
+  const start = (state.initialPage - 1) * pageSize;
+  const pageResults = state.initialResults.slice(start, start + pageSize);
+
+  showResults(ui, pageResults, {
+    mode: 'initial',
+    page: state.initialPage,
+    total: state.initialResults.length,
+    totalPages: getTotalPages(state.initialResults.length),
+  });
+}
+
+// Ordena el catalogo inicial: primeros los tramites mas usados, luego el resto por nombre.
+function buildInitialCatalogResults() {
+  const catalog = [...(state.catalog || [])];
+  const byName = new Map(catalog.map(item => [normalize(item.nombre).trim(), item]));
+  const pinned = [];
+  const pinnedIds = new Set();
+
+  for (const popularName of INITIAL_POPULAR_NAMES) {
+    const item = byName.get(popularName);
+    if (!item || pinnedIds.has(String(item.id))) continue;
+    pinned.push(item);
+    pinnedIds.add(String(item.id));
+  }
+
+  const rest = catalog
+    .filter(item => !pinnedIds.has(String(item.id)))
+    .sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es'));
+
+  return [...pinned, ...rest];
+}
+
+// Garantiza que la pagina pedida exista para el total actual.
+function getSafePage(page, totalItems) {
+  const totalPages = getTotalPages(totalItems);
+  const current = Number(page);
+  if (!Number.isFinite(current)) return 1;
+  return Math.max(1, Math.min(totalPages, Math.trunc(current)));
+}
+
+// Calcula paginas totales para el listado inicial.
+function getTotalPages(totalItems) {
+  return Math.max(1, Math.ceil(totalItems / SEARCH_CONFIG.initialPageSize));
+}
+
+// Muestra hasta cinco nombres de tramites como sugerencias de autocompletado.
+function renderAutocomplete(ui, results) {
+  state.autocompleteSuggestions = buildAutocompleteSuggestions(results);
+  state.autocompleteIndex = -1;
+
+  if (!state.autocompleteSuggestions.length) {
+    hideAutocomplete(ui);
+    return;
+  }
+
+  ui.suggestions.innerHTML = state.autocompleteSuggestions
+    .map((suggestion, index) => `
+      <button class="autocomplete-item" type="button" role="option" data-index="${index}" aria-selected="false">
+        <span>${renderAutocompleteSuggestionText(suggestion, ui.input.value)}</span>
+      </button>`)
+    .join('');
+  ui.suggestions.classList.add('visible');
+}
+
+// Resalta en azul la parte de la sugerencia que coincide con lo escrito.
+function renderAutocompleteSuggestionText(suggestion, query) {
+  const range = findNormalizedTextRange(suggestion, query);
+  if (!range) return escapeHtml(suggestion);
+
+  return `${escapeHtml(suggestion.slice(0, range.start))}<span class="autocomplete-match">${escapeHtml(suggestion.slice(range.start, range.end))}</span>${escapeHtml(suggestion.slice(range.end))}`;
+}
+
+// Encuentra una coincidencia ignorando mayusculas y acentos, pero conserva indices del texto original.
+function findNormalizedTextRange(value, query) {
+  const needle = normalize(query).trim();
+  if (!needle) return null;
+
+  let haystack = '';
+  const indexMap = [];
+
+  for (let index = 0; index < value.length; index += 1) {
+    const normalizedChar = normalize(value[index]);
+    for (let charIndex = 0; charIndex < normalizedChar.length; charIndex += 1) {
+      haystack += normalizedChar[charIndex];
+      indexMap.push(index);
+    }
+  }
+
+  const matchIndex = haystack.indexOf(needle);
+  if (matchIndex < 0) return null;
+
+  return {
+    start: indexMap[matchIndex],
+    end: indexMap[matchIndex + needle.length - 1] + 1,
+  };
+}
+
+// Toma resultados predictivos y arma una lista corta sin nombres repetidos.
+function buildAutocompleteSuggestions(results) {
+  const seen = new Set();
+  const suggestions = [];
+
+  for (const item of results) {
+    const name = String(item.nombre || '').trim();
+    const key = normalize(name);
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    suggestions.push(name);
+    if (suggestions.length >= 5) break;
+  }
+
+  return suggestions;
+}
+
+// Oculta el panel de sugerencias y reinicia su seleccion interna.
+function hideAutocomplete(ui) {
+  state.autocompleteSuggestions = [];
+  state.autocompleteIndex = -1;
+  ui.suggestions.classList.remove('visible');
+  ui.suggestions.innerHTML = '';
+}
+
+// Permite recorrer sugerencias con teclado y aceptar una con Enter.
+function handleAutocompleteKeydown(ui, event) {
+  if (!state.autocompleteSuggestions.length) return false;
+
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    moveAutocompleteSelection(ui, 1);
+    return true;
+  }
+
+  if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    moveAutocompleteSelection(ui, -1);
+    return true;
+  }
+
+  if (event.key === 'Enter' && state.autocompleteIndex >= 0) {
+    event.preventDefault();
+    applyAutocompleteValue(ui, state.autocompleteSuggestions[state.autocompleteIndex]);
+    return true;
+  }
+
+  if (event.key === 'Escape') {
+    hideAutocomplete(ui);
+    return true;
+  }
+
+  return false;
+}
+
+// Cambia la sugerencia resaltada cuando se navega con flechas.
+function moveAutocompleteSelection(ui, direction) {
+  const count = state.autocompleteSuggestions.length;
+  state.autocompleteIndex = (state.autocompleteIndex + direction + count) % count;
+
+  ui.suggestions.querySelectorAll('.autocomplete-item').forEach((item, index) => {
+    const isActive = index === state.autocompleteIndex;
+    item.classList.toggle('active', isActive);
+    item.setAttribute('aria-selected', String(isActive));
+  });
+}
+
+// Aplica la sugerencia clickeada sin ejecutar la busqueda con IA.
+function applyAutocompleteSelection(ui, event) {
+  const button = event.target.closest('.autocomplete-item');
+  if (!button) return;
+
+  event.preventDefault();
+  const suggestion = state.autocompleteSuggestions[Number(button.dataset.index)];
+  applyAutocompleteValue(ui, suggestion);
+}
+
+// Copia una sugerencia al input y recalcula los resultados predictivos.
+function applyAutocompleteValue(ui, suggestion) {
+  if (!suggestion) return;
+
+  ui.input.value = suggestion;
+  ui.input.focus();
+  state.skipAutocompleteOnce = true;
+  hideAutocomplete(ui);
+  handleInput(ui);
 }
 
 // Busca tramites localmente usando Fuse.js o una coincidencia simple como respaldo.
@@ -292,7 +532,8 @@ function renderAISuggestion(ui, data) {
   }
 
   if (!data.principal) {
-    showAI(ui, aiShell(`<div class="ai-notfound">${ICONS.empty} No encontré un trámite relevante. Intentá con más detalle.</div>`));
+    const message = data.explicacion || 'No se encontraron tramites relacionados con tu busqueda. Intenta nuevamente con otras palabras.';
+    showAI(ui, aiShell(`<div class="ai-notfound">${ICONS.empty} ${escapeHtml(message)}</div>`));
     return;
   }
 
@@ -309,18 +550,18 @@ function renderAISuggestion(ui, data) {
   if (principal) {
     content += `<div class="ai-principal-wrap">${renderCard(principal, {
       principal: true,
-      showDebug: true,
-      showFusePercent: true,
-      showEmbeddingPercent: true,
+      showDebug: !IS_PRODUCTION_VIEW,
+      showFusePercent: !IS_PRODUCTION_VIEW,
+      showEmbeddingPercent: !IS_PRODUCTION_VIEW,
     })}</div>`;
   }
   if (alternatives.length) {
     content += '<div class="alts-label">También puede ser:</div><div class="alts-list">';
     content += alternatives.map(alternative => renderCard(alternative, {
       alt: true,
-      showDebug: true,
-      showFusePercent: true,
-      showEmbeddingPercent: true,
+      showDebug: !IS_PRODUCTION_VIEW,
+      showFusePercent: !IS_PRODUCTION_VIEW,
+      showEmbeddingPercent: !IS_PRODUCTION_VIEW,
     })).join('');
     content += '</div>';
   }
@@ -385,6 +626,7 @@ function updateAIToggle(ui) {
 function showEmpty(ui) {
   ui.emptyState.style.display = 'flex';
   ui.resultsMeta.style.display = 'none';
+  hidePagination(ui);
   ui.results.innerHTML = '';
 }
 
@@ -392,6 +634,7 @@ function showEmpty(ui) {
 function showLoadingCatalog(ui) {
   ui.emptyState.style.display = 'none';
   ui.resultsMeta.style.display = 'none';
+  hidePagination(ui);
   ui.results.innerHTML = `<div class="ai-loading">${ICONS.loader} Cargando catálogo...</div>`;
 }
 
@@ -399,15 +642,18 @@ function showLoadingCatalog(ui) {
 function showEmbeddingLoading(ui) {
   ui.emptyState.style.display = 'none';
   ui.resultsMeta.style.display = 'none';
+  hidePagination(ui);
   ui.results.innerHTML = `<div class="ai-loading">${ICONS.loader} Buscando candidatos...</div>`;
 }
 
 // Renderiza la lista de resultados o el mensaje de ausencia de resultados.
 function showResults(ui, results, context = {}) {
   ui.emptyState.style.display = 'none';
+  if (context.mode !== 'initial') hidePagination(ui);
 
   if (!results.length) {
     ui.resultsMeta.style.display = 'none';
+    hidePagination(ui);
     const message = context.mode === 'candidate'
       ? 'Sin candidatos. Intentá con otras palabras.'
       : 'Sin resultados. Intentá con otras palabras o presioná Buscar.';
@@ -416,26 +662,76 @@ function showResults(ui, results, context = {}) {
   }
 
   const suffix = context.mode === 'candidate'
-    ? ' candidatos para IA'
+    ? (IS_PRODUCTION_VIEW ? '' : ' candidatos para IA')
     : context.mode === 'predictive'
-      ? ' predictivos'
+      ? (IS_PRODUCTION_VIEW ? '' : ' predictivos')
       : context.mode === 'embedding'
-        ? ' por embeddings'
+        ? (IS_PRODUCTION_VIEW ? '' : ' por embeddings')
       : '';
   ui.resultsMeta.style.display = 'block';
   const visibleResults = getVisibleResults(results, context);
-  ui.resultsMeta.textContent = `${visibleResults.length} resultado${visibleResults.length !== 1 ? 's' : ''} encontrado${visibleResults.length !== 1 ? 's' : ''}${suffix}`;
+  ui.resultsMeta.textContent = buildResultsMetaText(visibleResults, context, suffix);
   ui.results.innerHTML = visibleResults.map(item => renderCard(item, {
-    showDebug: context.mode === 'candidate' || context.mode === 'predictive' || context.mode === 'embedding',
-    showFusePercent: context.mode === 'candidate' || context.mode === 'predictive' || context.mode === 'embedding',
-    showEmbeddingPercent: context.mode === 'candidate' || context.mode === 'embedding',
+    showDebug: !IS_PRODUCTION_VIEW && (context.mode === 'candidate' || context.mode === 'predictive' || context.mode === 'embedding'),
+    showFusePercent: !IS_PRODUCTION_VIEW && (context.mode === 'candidate' || context.mode === 'predictive' || context.mode === 'embedding'),
+    showEmbeddingPercent: !IS_PRODUCTION_VIEW && (context.mode === 'candidate' || context.mode === 'embedding'),
   })).join('');
+  if (context.mode === 'initial') renderPagination(ui, context);
+}
+
+// Define el texto del contador/listado segun la vista activa.
+function buildResultsMetaText(visibleResults, context, suffix) {
+  if (IS_PRODUCTION_VIEW) {
+    if (context.mode === 'initial') {
+      return `${context.total} trámite${context.total !== 1 ? 's' : ''} disponible${context.total !== 1 ? 's' : ''}`;
+    }
+    if (context.mode === 'candidate' && state.aiSuggestedIds.size) return 'Resultados más aproximados';
+    return `${visibleResults.length} trámite${visibleResults.length !== 1 ? 's' : ''} disponible${visibleResults.length !== 1 ? 's' : ''}`;
+  }
+
+  if (context.mode === 'initial') {
+    return `${context.total} trámite${context.total !== 1 ? 's' : ''} cargado${context.total !== 1 ? 's' : ''} - página ${context.page} de ${context.totalPages}`;
+  }
+
+  return `${visibleResults.length} resultado${visibleResults.length !== 1 ? 's' : ''} encontrado${visibleResults.length !== 1 ? 's' : ''}${suffix}`;
+}
+
+// Renderiza los controles de paginacion del catalogo inicial.
+function renderPagination(ui, context) {
+  const totalPages = Number(context.totalPages) || 1;
+  const page = Number(context.page) || 1;
+
+  if (totalPages <= 1) {
+    hidePagination(ui);
+    return;
+  }
+
+  ui.pagination.innerHTML = `
+    <button type="button" data-page="${page - 1}" ${page === 1 ? 'disabled' : ''}>Anterior</button>
+    <span>Página ${page} de ${totalPages}</span>
+    <button type="button" data-page="${page + 1}" ${page === totalPages ? 'disabled' : ''}>Siguiente</button>
+  `;
+  ui.pagination.style.display = 'flex';
+}
+
+// Oculta la paginacion cuando hay busqueda activa.
+function hidePagination(ui) {
+  ui.pagination.style.display = 'none';
+  ui.pagination.innerHTML = '';
+}
+
+// Cambia de pagina en el catalogo inicial.
+function handlePaginationClick(ui, event) {
+  const button = event.target.closest('button[data-page]');
+  if (!button || button.disabled) return;
+  showInitialCatalog(ui, Number(button.dataset.page));
 }
 
 // Renderiza errores de busqueda dentro del area de resultados.
 function showResultsError(ui, message) {
   ui.emptyState.style.display = 'none';
   ui.resultsMeta.style.display = 'none';
+  hidePagination(ui);
   ui.results.innerHTML = `<div class="state-no-results">${ICONS.error} ${escapeHtml(message)}</div>`;
 }
 
@@ -456,11 +752,15 @@ function setSearchButton(ui, loading) {
   state.searchPending = loading;
   ui.searchButton.classList.toggle('loading', loading);
   ui.searchButton.disabled = loading;
-  ui.searchButton.querySelector('span').textContent = loading ? 'Buscando...' : 'Buscar';
+  ui.searchButton.querySelector('span').textContent = loading ? 'Buscando...' : 'Buscar con IA';
 }
 
 // Envuelve contenido de IA con el encabezado estandar de sugerencia.
 function aiShell(content) {
+  if (IS_PRODUCTION_VIEW) {
+    return `<div class="ai-header"><img src="/production/assets/bi_stars.svg" alt="" aria-hidden="true"> Mejor resultado según IA</div>${content}`;
+  }
+
   return `<div class="ai-header">${ICONS.brain} Sugerencia IA</div>${content}`;
 }
 
@@ -495,16 +795,44 @@ function renderCard(item, options = {}) {
     badges.push('<span class="badge badge-text-match">Nombre exacto</span>');
   }
 
-  if (options.principal) {
+  if (options.principal && !IS_PRODUCTION_VIEW) {
     badges.push('<span class="badge badge-suggested">Sugerido</span>');
   }
 
   return `
     <article class="${classes.join(' ')}">
       ${badges.length ? `<div class="card-meta">${badges.join('')}</div>` : ''}
+      ${IS_PRODUCTION_VIEW ? renderProductionTags(item, { suggested: options.principal }) : ''}
       <h2 class="card-title">${escapeHtml(item.nombre)}</h2>
       ${item.descripcion ? `<p class="card-desc">${escapeHtml(item.descripcion)}</p>` : ''}
+      ${IS_PRODUCTION_VIEW ? renderProductionAccessLine() : ''}
     </article>`;
+}
+
+// Genera chips visuales simples para la vista produccion a partir del nombre del tramite.
+function renderProductionTags(item, options = {}) {
+  const terms = tokenizeExactWords(item.nombre)
+    .filter(token => token.length >= 4)
+    .slice(0, 3);
+
+  if (!terms.length && !options.suggested) return '';
+
+  const tags = terms.map(term => `<span>${escapeHtml(term.toUpperCase())}</span>`).join('');
+  const suggested = options.suggested ? '<span class="badge-suggested">Sugerido</span>' : '';
+  return `<div class="production-tags">${tags}${suggested}</div>`;
+}
+
+// Agrega la linea de nivel minimo visible en las tarjetas de produccion.
+function renderProductionAccessLine() {
+  return `<div class="production-access">
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="7" cy="12" r="3"></circle>
+      <path d="M10 12h10"></path>
+      <path d="M16 12v3"></path>
+      <path d="M19 12v2"></path>
+    </svg>
+    Nivel mínimo de acceso requerido: NIVEL 1
+  </div>`;
 }
 
 // Agrega metadata de testing para resultados recuperados por Fuse.
@@ -554,6 +882,7 @@ function toAICandidate(item) {
     fuseScore: Number.isFinite(Number(item.fuseScore)) ? Number(item.fuseScore) : null,
     sources: Array.isArray(item.sources) ? item.sources : [],
     aiCandidateRank: Number.isFinite(Number(item.aiCandidateRank)) ? Number(item.aiCandidateRank) : null,
+    exactNameWords: Boolean(item.exactNameWords),
   };
 }
 

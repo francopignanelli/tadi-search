@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TADI Search</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+  <link rel="stylesheet" href="/production/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js" defer></script>
+  <script src="/js/app.js" defer></script>
+</head>
+<body data-app-mode="production">
+  <header class="tad-topbar">
+    <div class="tad-container tad-header-inner">
+      <a class="tad-logo" href="#" aria-label="Trámites a Distancia">
+        <img class="ba-mark" src="/production/assets/tad-logo-oscuro.png" alt="" aria-hidden="true">
+        <span>
+          <strong>Trámites a Distancia</strong>
+          <small>Gobierno de la Ciudad</small>
+        </span>
+      </a>
+
+      <nav class="tad-nav" aria-label="Navegación principal">
+        <a class="active" href="#">Inicio</a>
+        <a href="#">Mis trámites</a>
+        <a href="#">Mis Obras</a>
+        <a href="#">Notificaciones</a>
+        <a href="#">Apoderados</a>
+        <a href="#">Consultar trámites</a>
+      </nav>
+    </div>
+
+    <div class="tad-userbar">
+      <div class="tad-container tad-userbar-inner">
+        <button class="tad-user-menu" type="button">Franco Ariel PIGNANELLI (Nivel 3)</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="search-dialog tad-page" aria-labelledby="app-title">
+    <button id="ai-toggle" class="ai-toggle active production-ai-toggle" type="button" aria-pressed="true">IA</button>
+
+    <section class="tad-hero">
+      <div class="tad-container tad-hero-content">
+        <h1 id="app-title">Trámites a Distancia (TAD)</h1>
+        <p class="tad-hero-lead">Encontrá y gestioná tus trámites de la Administración Pública a través de la plataforma.</p>
+        <p class="tad-hero-help">Empezá a escribir para ver sugerencias. Presioná Enter o usá <strong>Buscar con IA</strong> para una búsqueda más precisa.</p>
+
+        <div class="search-wrap tad-searchbar">
+          <div class="search-input-area">
+            <div class="field">
+              <input id="search-input" type="text" placeholder="Buscá un trámite por nombre, organismo o temática" autocomplete="off" spellcheck="false" aria-label="Buscar trámite">
+              <button id="clear-btn" class="clear-btn" type="button" title="Limpiar" aria-label="Limpiar búsqueda">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+            <div id="autocomplete-suggestions" class="autocomplete-suggestions" role="listbox" aria-label="Sugerencias de búsqueda"></div>
+          </div>
+
+          <div class="search-actions">
+            <button id="search-btn" class="btn btn-primary tad-ai-button" type="button">
+              <img src="/production/assets/bi_stars.svg" alt="" aria-hidden="true">
+              <span>Buscar con IA</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="dialog-content tad-container tad-results-section">
+      <div class="production-results-layout">
+        <aside class="production-filters" aria-label="Filtros de trámites">
+          <h2>Filtrar por:</h2>
+          <button type="button">Tema <span aria-hidden="true">+</span></button>
+          <button type="button">Sub-tema <span aria-hidden="true">+</span></button>
+          <button type="button">Tipología de trámite <span aria-hidden="true">+</span></button>
+        </aside>
+
+        <div class="production-results-main">
+          <div id="empty-state" class="state-empty">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <strong>Empezá a escribir</strong>
+            <p>Los resultados aparecen mientras escribís.</p>
+          </div>
+
+          <div id="ai-card" class="ai-card"></div>
+          <div id="results-meta" class="results-meta"></div>
+          <div id="results" class="results-grid"></div>
+          <div id="pagination" class="pagination" aria-label="Paginación de trámites"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -21,6 +21,16 @@ Abrir:
 http://localhost:3002
 ```
 
+Vistas disponibles:
+
+```text
+http://localhost:3002
+http://localhost:3002/produccion
+```
+
+- `/`: vista de testing, con etiquetas de ranking y metricas.
+- `/produccion`: vista limpia, sin etiquetas de Fuse, embeddings ni ranking IA.
+
 Ya no hace falta levantar un servicio Python/FastAPI separado. Los embeddings corren desde Node.js.
 
 ## Variables de entorno
@@ -32,9 +42,12 @@ GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-2.5-flash-lite
 EMBEDDING_MODEL=Xenova/paraphrase-multilingual-MiniLM-L12-v2
 PORT=3002
+AI_USAGE_LOG_ENABLED=true
 ```
 
 Si `GEMINI_API_KEY` no esta configurada, la busqueda predictiva y la busqueda por embeddings siguen funcionando. La sugerencia con IA muestra un aviso.
+
+`AI_USAGE_LOG_ENABLED` activa el registro local de consumo de IA. Al buscar con IA, la app genera `logs/ai-usage.md` y `logs/ai-usage.ndjson` con fecha, candidatos enviados y tokens reportados por Gemini.
 
 ## Configuracion de busqueda
 
@@ -138,13 +151,23 @@ src/catalog.js
 src/gemini-service.js
 src/semantic-search.js
 src/text-utils.js
+src/ai-usage-log.js
 scripts/generate-embeddings.js
 public/index.html
 public/css/app.css
 public/js/app.js
+public/production/index.html
+public/production/styles.css
+public/production/assets/
 data/Listado_tramites_PRD.json
 data/embeddings_tramites.json
 ```
+
+## Consumo de IA
+
+La documentacion del registro de tokens esta en `AI_USAGE_LOGGING.md`.
+
+La comparativa de proveedores pagos esta en `PROVEEDORES_IA.md`.
 
 ## Regenerar embeddings
 

@@ -24,6 +24,11 @@ const MAX_AI_CANDIDATES = 50;
 app.use(express.json({ limit: '256kb' }));
 app.use(express.static(PUBLIC_DIR));
 
+// Expone una URL limpia para la vista de produccion sin etiquetas de testing.
+app.get('/produccion', (_req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'production', 'index.html'));
+});
+
 // Devuelve el catalogo normalizado para que el navegador construya el indice Fuse.js.
 app.get('/api/catalog', (_req, res) => {
   const catalog = getCatalog();

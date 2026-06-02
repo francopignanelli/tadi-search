@@ -155,6 +155,12 @@ body::before {
   margin-bottom: 16px;
 }
 
+.search-input-area {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
 .search-actions {
   display: flex;
   gap: 8px;
@@ -180,6 +186,79 @@ body::before {
 .field:focus-within {
   border-color: var(--info);
   box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.autocomplete-suggestions {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: 100%;
+  display: none;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: 0 12px 28px rgba(8, 15, 28, .18);
+}
+
+.autocomplete-suggestions.visible {
+  display: block;
+}
+
+.autocomplete-item {
+  position: relative;
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--body-secondary);
+  background: var(--surface);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.autocomplete-item:last-child {
+  border-bottom: 0;
+}
+
+.autocomplete-item::before {
+  content: "";
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  opacity: .75;
+}
+
+.autocomplete-item::after {
+  content: "";
+  position: absolute;
+  left: 26px;
+  top: 25px;
+  width: 7px;
+  height: 2px;
+  transform: rotate(45deg);
+  background: currentColor;
+  opacity: .75;
+}
+
+.autocomplete-match {
+  color: var(--info);
+  font-weight: 800;
+}
+
+.autocomplete-item:hover,
+.autocomplete-item.active {
+  color: var(--info);
+  background: var(--sky-soft);
 }
 
 .field > svg {
@@ -335,6 +414,40 @@ body::before {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.pagination {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+  color: var(--body-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pagination button {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--body-primary);
+  background: var(--surface);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pagination button:hover:not(:disabled) {
+  border-color: var(--info);
+  color: var(--info-dark);
+}
+
+.pagination button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
 }
 
 .card {
