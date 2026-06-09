@@ -5,10 +5,10 @@
 TADI Search es un mockup para evaluar una experiencia de busqueda de tramites TAD basada en tres mecanismos complementarios:
 
 1. Busqueda predictiva con Fuse.js.
-2. Busqueda semantica por embeddings.
+2. Busqueda semantica/textual con embeddings y refuerzo por coincidencia.
 3. Analisis final con IA generativa.
 
-La idea central es no depender de un unico ranking. Fuse.js recupera coincidencias textuales, embeddings recupera similitud semantica y Gemini decide entre candidatos reales del catalogo.
+La idea central es no depender de un unico ranking. Fuse.js recupera coincidencias textuales rapidas, la busqueda semantica/textual combina embeddings con coincidencias fuertes en nombre, keywords y descripcion, y Gemini decide entre candidatos reales del catalogo.
 
 ## Arquitectura
 
@@ -39,7 +39,7 @@ src/catalog.js
   Lee y normaliza el catalogo PRD.
 
 src/semantic-search.js
-  Carga embeddings, genera el embedding de la consulta y calcula similitud coseno.
+  Carga embeddings, limpia la consulta, calcula similitud coseno y aplica refuerzo textual.
 
 src/gemini-service.js
   Construye prompts, llama a Gemini y normaliza la respuesta.
@@ -121,8 +121,8 @@ Significado:
 - `predictiveVisibleLimit`: cantidad mostrada mientras se escribe. `null` muestra todo.
 - `fuseCandidateMinPercent`: umbral minimo de Fuse para candidato IA.
 - `includeExactNameWordsForAI`: incluye candidatos si el nombre contiene todas las palabras de la busqueda.
-- `embeddingVisibleLimit`: cantidad de resultados embeddings pedidos al backend para visualizacion/testing.
-- `embeddingCandidatesForAI`: cantidad de embeddings que entran como candidatos IA.
+- `embeddingVisibleLimit`: cantidad de resultados de busqueda semantica/textual pedidos al backend para visualizacion/testing.
+- `embeddingCandidatesForAI`: cantidad de resultados de busqueda semantica/textual que entran como candidatos IA.
 - `aiCandidatesSentLimit`: limite final de candidatos enviados a Gemini. `null` no recorta.
 - `searchVisibleLimit`: limite visual despues de Buscar. `null` muestra todo lo disponible.
 
@@ -161,10 +161,43 @@ state.fuse = new Fuse(items, {
 Uso mientras se escribe:
 
 - Se ejecuta en el navegador.
-- Antes de consultar Fuse, se quitan palabras de intencion como `quiero`, `hacer`, `necesito`, `tramite`, para que una frase como `quiero hacer una partida` se busque como `partida`.
+- Antes de consultar Fuse, se quitan palabras de intencion como `quiero`, `busco`, `hacer`, `necesito`, `tramite`, para que una frase como `busco hacer una partida` se busque como `partida`.
 - Muestra coincidencias predictivas.
 - Ordena por score interno de Fuse, de menor a mayor.
 - La UI convierte ese score a `Fuse XX%` para que mayor sea mejor.
+
+Detalle de limpieza:
+
+```text
+1. Convierte a minusculas.
+2. Quita acentos.
+3. Separa en palabras.
+4. Elimina tokens de menos de 3 caracteres.
+5. Elimina stopwords genericas de intencion, conectores y pronombres.
+6. Une los terminos relevantes restantes.
+```
+
+Stopwords actuales:
+
+```text
+quiero, quisiera, deseo, necesito, necesitaria, tengo, busco, buscar, buscando,
+hacer, realizar, iniciar, obtener, sacar, pedir, conseguir, ver, saber,
+tramite, tramites, tramitar, gestion, gestionar, solicitud, solicitar,
+una, uno, unos, unas, para, por, con, sin, del, los, las, que,
+como, donde, cuando, sobre, este, esta, esto, mis, tus, sus
+```
+
+Ejemplo:
+
+```text
+Necesito hacer una partida urgente -> partida urgente
+```
+
+No deben agregarse como stopwords terminos de dominio que modifican la intencion, como:
+
+```text
+alta, baja, urgente, licencia, certificado, partida, domicilio
+```
 
 Uso al presionar Buscar:
 
@@ -181,7 +214,7 @@ Orden de prioridad:
 2. Luego se agregan embeddings que no esten repetidos.
 3. Si un tramite aparece por ambos metodos, se fusionan sus datos.
 
-## 2. Busqueda por embeddings
+## 2. Busqueda semantica/textual
 
 Implementacion:
 
@@ -225,10 +258,12 @@ Herramienta:
 Flujo:
 
 1. `scripts/generate-embeddings.js` genera `data/embeddings_tramites.json`.
-2. En cada busqueda, Node genera el embedding de la consulta.
-3. Node compara la consulta contra los vectores guardados.
-4. Se calcula similitud coseno.
-5. Se ordena de mayor a menor similitud.
+2. En cada busqueda, Node limpia la consulta con stopwords compartidas.
+3. Node genera el embedding de la consulta limpia.
+4. Node compara la consulta contra los vectores guardados.
+5. Se calcula similitud coseno.
+6. Se calcula un refuerzo textual sobre `nombre`, `keywords` y `descripcion`.
+7. Se ordena por el mejor score combinado de coincidencia semantica/textual.
 
 Cantidades:
 
@@ -237,8 +272,37 @@ Cantidades:
 
 Orden de prioridad:
 
-- Embeddings siempre ordena por similitud coseno descendente.
-- En modo IA, embeddings no reemplaza el orden de Fuse; suma candidatos adicionales y aporta score semantico.
+- La busqueda semantica/textual no ordena solo por similitud coseno.
+- El score final toma la mejor senal entre embedding y coincidencia textual fuerte.
+- En modo IA, esta busqueda no reemplaza el orden de Fuse; suma candidatos adicionales y aporta score de coincidencia.
+
+### Limpieza de consulta para embeddings
+
+La consulta enviada por el usuario se limpia antes de generar el embedding.
+
+Ejemplo:
+
+```text
+Busco hacer una partida -> partida
+```
+
+Esto evita que palabras genericas de intencion, como `busco` o `hacer`, desplacen el vector hacia conceptos amplios en lugar del objeto real de busqueda.
+
+La consulta original se conserva para logs y para la IA.
+
+### Refuerzo textual y ruido vectorial
+
+El ruido vectorial aparece cuando el modelo de embeddings rankea alto tramites con cercanias semanticas debiles o accidentales, especialmente en textos largos.
+
+Para mitigarlo, el backend revisa si los terminos relevantes aparecen en:
+
+```text
+nombre
+keywords
+descripcion
+```
+
+Si hay coincidencias fuertes, el tramite sube en el ranking aunque el embedding puro lo hubiera dejado bajo. Esto protege busquedas literales como `partida`, `partida urgente` o `certificado domicilio`.
 
 ## 3. Analisis y respuesta IA
 
@@ -253,10 +317,26 @@ renderAISuggestion()
 
 Gemini no recibe todo el catalogo. Recibe candidatos ya filtrados.
 
+Gemini recibe la consulta original completa, no la consulta limpia. La consulta limpia se usa para recuperar y rankear candidatos; la original se conserva para que la IA entienda la necesidad expresada y redacte una explicacion natural.
+
+Ejemplo:
+
+```text
+Consulta original: Necesito hacer una partida
+Consulta limpia para busqueda: partida
+Texto que recibe Gemini: El usuario busca: "Necesito hacer una partida"
+```
+
+Esto permite respuestas del estilo:
+
+```text
+Si necesitas hacer una partida, el tramite mas adecuado es...
+```
+
 Candidatos enviados:
 
 - Fuse: todos los que superan el porcentaje configurado o tienen palabras exactas en `nombre`.
-- Embeddings: top `embeddingCandidatesForAI`.
+- Busqueda semantica/textual: top `embeddingCandidatesForAI`.
 - Duplicados: se eliminan por `id`.
 
 Datos enviados por candidato:
@@ -300,7 +380,7 @@ Orden de prioridad:
 
 1. Gemini debe elegir solo entre candidatos enviados.
 2. Puede priorizar candidatos que aparecen por Fuse y embeddings.
-3. Puede elegir un candidato que solo vino por embeddings si semanticamente responde mejor.
+3. Puede elegir un candidato que solo vino por busqueda semantica/textual si responde mejor.
 4. Devuelve un principal y hasta 3 alternativas.
 
 ## Modos de visualizacion
@@ -314,10 +394,10 @@ Muestra resultados Fuse:
 
 ### Buscar con IA apagada
 
-Muestra resultados embeddings:
+Muestra resultados de busqueda semantica/textual:
 
-- `Embedding #N`
-- `Embedding XX%`
+- `Busqueda #N`
+- `Coincidencia XX%`
 - Si el tramite tambien aparecio en Fuse, agrega `Predictiva #N` y `Fuse XX%`.
 
 ### Buscar con IA encendida
@@ -326,11 +406,42 @@ Muestra candidatos IA y sugerencia:
 
 - `Predictiva #N`, si viene de Fuse.
 - `Fuse XX%`.
-- `Embedding #N`, si aparece en embeddings.
-- `Embedding XX%`.
+- `Busqueda #N`, si aparece en busqueda semantica/textual.
+- `Coincidencia XX%`.
 - `Nombre exacto`, si entro por palabras exactas en nombre.
 - `IA cand. #N`.
 - `Sugerido`, para el principal elegido por Gemini.
+
+## Debug en consola
+
+Al presionar Buscar, `public/js/app.js` registra el flujo completo en la consola del navegador, tanto en `/` como en `/produccion`.
+
+Grupos emitidos:
+
+```text
+[TADI Search] Busqueda iniciada
+[TADI Search] Resultados Fuse
+[TADI Search] Candidatos Fuse que pasan filtro IA
+[TADI Search] Request busqueda semantica/textual
+[TADI Search] Top busqueda semantica/textual
+[TADI Search] Candidatos combinados para IA
+[TADI Search] Request IA
+[TADI Search] Candidatos enviados a IA
+[TADI Search] Respuesta IA
+[TADI Search] Resumen tokens IA
+============================== FIN BUSQUEDA TADI ==============================
+```
+
+Esto permite auditar porcentajes, rankings, candidatos recuperados y candidatos enviados a IA aunque la vista `/produccion` no muestre tags visuales.
+
+`Resumen tokens IA` contiene solo dos valores para lectura rapida:
+
+```text
+tokensTramitesEnviadosEstimados
+tokensTotalesConsumidos
+```
+
+El primer valor se estima localmente a partir de los candidatos enviados a IA. El segundo viene del `usageMetadata.totalTokenCount` reportado por Gemini.
 
 ## Comentarios sobre limpieza
 

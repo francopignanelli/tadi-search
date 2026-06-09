@@ -3,10 +3,12 @@
 Este documento describe el flujo actual del buscador TADI Search dividido en tres capas:
 
 1. Busqueda predictiva.
-2. Busqueda semantica por embeddings.
+2. Busqueda semantica/textual por embeddings y refuerzo de coincidencia.
 3. Sugerencia con IA.
 
-La idea central es que cada capa tenga un rol distinto. La busqueda predictiva da respuesta inmediata mientras se escribe. La busqueda por embeddings es la busqueda principal cuando se presiona `Enter` o `Buscar`. La IA no busca en todo el catalogo: solo interpreta y recomienda entre los candidatos que ya encontro la busqueda por embeddings.
+La idea central es que cada capa tenga un rol distinto. La busqueda predictiva da respuesta inmediata mientras se escribe. La busqueda semantica/textual es la busqueda principal cuando se presiona `Enter` o `Buscar`. La IA no busca en todo el catalogo: solo interpreta y recomienda entre los candidatos que ya encontraron Fuse y la busqueda semantica/textual.
+
+Resumen actualizado y compartible: `BUSQUEDA_RANKING.md`.
 
 ## Datos base
 
@@ -36,7 +38,7 @@ En el backend, `server.js` normaliza el catalogo a este formato:
 }
 ```
 
-Ese formato normalizado es el contrato comun que usan el frontend, la busqueda por embeddings y la IA.
+Ese formato normalizado es el contrato comun que usan el frontend, la busqueda semantica/textual y la IA.
 
 ## 1. Busqueda predictiva
 
@@ -106,7 +108,7 @@ Usuario escribe
 -> handleInput()
 -> searchLocal()
 -> Fuse.js busca en nombre y descripcion
--> se muestran hasta 15 resultados predictivos
+-> se muestran los resultados predictivos segun SEARCH_CONFIG.predictiveVisibleLimit
 ```
 
 Fragmento clave:
@@ -126,9 +128,9 @@ function searchLocal(query) {
 
 El fallback simple se usa solo si Fuse.js no esta disponible.
 
-## 2. Busqueda semantica por embeddings
+## 2. Busqueda semantica/textual
 
-La busqueda por embeddings ocurre cuando la persona confirma la busqueda presionando `Enter` o haciendo clic en `Buscar`.
+La busqueda semantica/textual ocurre cuando la persona confirma la busqueda presionando `Enter` o haciendo clic en `Buscar`.
 
 Archivos principales:
 
@@ -150,7 +152,7 @@ Con un cuerpo como:
 ```json
 {
   "q": "Partida",
-  "top_k": 15
+  "top_k": 50
 }
 ```
 
@@ -161,7 +163,7 @@ async function searchByEmbedding(query) {
   const response = await fetch('/api/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ q: query, top_k: MAX_EMBEDDING_RESULTS }),
+    body: JSON.stringify({ q: query, top_k: SEARCH_CONFIG.embeddingVisibleLimit }),
   });
 
   const data = await response.json();
@@ -169,10 +171,10 @@ async function searchByEmbedding(query) {
 }
 ```
 
-`MAX_EMBEDDING_RESULTS` vale:
+`SEARCH_CONFIG.embeddingVisibleLimit` vale:
 
 ```js
-const MAX_EMBEDDING_RESULTS = 15;
+embeddingVisibleLimit: 50
 ```
 
 ### Embeddings integrados en Node
@@ -273,11 +275,11 @@ function scoreToPercent(score) {
 }
 ```
 
-Ese porcentaje hoy se mantiene como ayuda para testeo. No representa una certeza absoluta, sino una medida de cercania semantica.
+Ese porcentaje hoy se mantiene como ayuda para testeo. No representa una certeza absoluta, sino una medida de coincidencia semantica/textual.
 
-### Ranking hibrido
+### Ranking semantico/textual
 
-Despues de obtener los resultados semanticos, `server.js` aplica un ranking hibrido.
+`src/semantic-search.js` calcula un ranking combinado.
 
 Ese ranking combina:
 
@@ -287,32 +289,19 @@ similitud semantica por embeddings
 coincidencia textual sobre nombre, descripcion corta y keywords
 ```
 
-Pesos actuales:
-
-```js
-const EMBEDDING_WEIGHT = 0.55;
-const LEXICAL_WEIGHT = 0.45;
-```
-
-Fragmento:
-
-```js
-hybridScore: (item.score * EMBEDDING_WEIGHT) + (item.lexicalScore * LEXICAL_WEIGHT)
-```
-
-La coincidencia textual se calcula en el backend, dentro de `server.js`, con `scoreLexicalMatch()`.
+La coincidencia textual se calcula en el backend, dentro de `src/semantic-search.js`, con `calculateLexicalScore()`.
 
 No viene de Fuse.js. Fuse.js solo se usa para la busqueda predictiva del frontend.
 
 Esta capa textual ayuda a corregir busquedas literales. Por ejemplo, si la persona busca `Partida`, el backend puede subir tramites cuyo nombre contiene `Partida`, aunque el score semantico puro no los haya dejado primeros. Tambien permite que una keyword curada, como `animal`, suba un tramite aunque esa palabra no este en el titulo.
 
-Las keywords tienen un peso alto dentro de esta capa textual:
+Las keywords tienen peso alto dentro de esta capa textual, igual que las coincidencias fuertes en nombre y descripcion:
 
 ```text
-keyword exacta: 0.98
-keyword dentro de una frase buscada: 0.95
-keyword que contiene la busqueda: 0.92
-keyword por token: 0.98
+nombre con todos los terminos relevantes
+keywords con todos los terminos relevantes
+descripcion con todos los terminos relevantes
+combinacion de nombre + keywords + descripcion
 ```
 
 Flujo completo de embeddings:
@@ -321,11 +310,11 @@ Flujo completo de embeddings:
 Usuario presiona Enter o Buscar
 -> public/js/app.js llama POST /api/search
 -> server.js recibe q y top_k
--> src/semantic-search.js genera embedding de la consulta
+-> src/semantic-search.js limpia la consulta y genera embedding de la consulta limpia
 -> Node compara contra data/embeddings_tramites.json
 -> server.js cruza resultados con Listado_tramites_PRD.json
--> server.js aplica ranking hibrido
--> frontend muestra hasta 15 tarjetas
+-> src/semantic-search.js aplica ranking semantico/textual
+-> frontend muestra resultados segun SEARCH_CONFIG
 ```
 
 ### Regeneracion de embeddings
@@ -445,16 +434,16 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
 
 ### Candidatos enviados a la IA
 
-Despues de recibir los resultados de `/api/search`, el frontend toma como maximo los primeros 6:
+Despues de recibir los resultados de `/api/search`, el frontend toma los primeros `embeddingCandidatesForAI` para sumarlos como candidatos IA:
 
 ```js
-const candidates = results.slice(0, MAX_AI_CANDIDATES);
+const semanticCandidates = embeddingResults.slice(0, SEARCH_CONFIG.embeddingCandidatesForAI);
 ```
 
 Donde:
 
 ```js
-const MAX_AI_CANDIDATES = 6;
+embeddingCandidatesForAI: 10
 ```
 
 Cada candidato se reduce a lo minimo necesario:
@@ -466,7 +455,11 @@ function toAICandidate(item) {
     nombre: item.nombre,
     descripcion: truncateForAI(item.descripcion, MAX_AI_DESCRIPTION_LENGTH),
     keywords: Array.isArray(item.keywords) ? item.keywords : [],
-    scorePercent: getScorePercent(item),
+    scorePercent: getScorePercent(item, true),
+    fusePercent: getFusePercent(item, true),
+    embeddingRank: Number.isFinite(Number(item.embeddingRank)) ? Number(item.embeddingRank) : null,
+    fuseRank: Number.isFinite(Number(item.fuseRank)) ? Number(item.fuseRank) : null,
+    sources: Array.isArray(item.sources) ? item.sources : [],
   };
 }
 ```
@@ -496,13 +489,17 @@ Payload enviado al backend:
       "nombre": "Solicitud de Partida",
       "descripcion": "...",
       "keywords": ["acta", "registro civil"],
-      "scorePercent": 21
+      "scorePercent": 99,
+      "fusePercent": 88,
+      "embeddingRank": 1,
+      "fuseRank": 2,
+      "sources": ["fuse", "embedding"]
     }
   ]
 }
 ```
 
-El backend vuelve a limitar a 6 candidatos por seguridad:
+El backend vuelve a limitar candidatos por seguridad:
 
 ```js
 const candidates = candidatos.slice(0, MAX_AI_CANDIDATES);
@@ -629,13 +626,13 @@ Usuario escribe
 
 Usuario presiona Enter o Buscar
 -> POST /api/search
--> Node genera embedding de la consulta
+-> Node limpia la consulta y genera embedding de la consulta limpia
 -> Node compara contra data/embeddings_tramites.json
--> Node aplica ranking hibrido
+-> Node aplica ranking semantico/textual
 -> frontend muestra resultados
 
 Si IA esta activa
--> frontend toma hasta 6 resultados
+-> frontend combina candidatos Fuse + top 10 de busqueda semantica/textual
 -> POST /api/ai
 -> Gemini elige principal y alternativas
 -> frontend muestra sugerencia IA sin repetir tarjetas
@@ -644,10 +641,10 @@ Si IA esta activa
 ## Decisiones importantes
 
 - La busqueda predictiva se mantiene separada porque es instantanea y barata.
-- La busqueda semantica es el motor principal al confirmar la busqueda.
+- La busqueda semantica/textual es el motor principal al confirmar la busqueda.
 - La IA no se usa como motor de busqueda, sino como capa de interpretacion sobre candidatos ya filtrados.
 - `DESCRIPCION_HTML` queda fuera para evitar ruido, HTML innecesario y payloads mas grandes.
-- El score visible en tarjetas es el score semantico de embeddings, no el score hibrido final.
+- El score visible en tarjetas es la coincidencia combinada semantica/textual.
 - El servicio Python/FastAPI fue eliminado para simplificar ejecucion, mantenimiento y despliegue.
 
 ## Comandos utiles

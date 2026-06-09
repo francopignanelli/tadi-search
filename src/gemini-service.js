@@ -6,7 +6,7 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
 const REQUEST_TIMEOUT_MS = 20000;
 const MAX_AI_DESCRIPTION_LENGTH = 450;
 const MIN_AI_FUSE_PERCENT = 35;
-const MIN_AI_EMBEDDING_PERCENT = 45;
+const MIN_AI_SEARCH_PERCENT = 45;
 const NOT_FOUND_EXPLANATION = 'No se encontraron tramites relacionados con tu busqueda. Intenta nuevamente con otras palabras.';
 
 // Consulta Gemini para elegir el tramite mas relevante entre candidatos ya filtrados.
@@ -106,12 +106,13 @@ function buildSystemPrompt() {
   return [
     'Sos un asistente de la plataforma TAD (Tramites a Distancia) del Gobierno de la Ciudad de Buenos Aires.',
     'Tu tarea es identificar que tramite gubernamental necesita el usuario basandote en su consulta en lenguaje natural.',
-    'Los candidatos pueden venir de busqueda predictiva por texto, embeddings semanticos o ambos metodos.',
-    'No penalices un candidato solo porque viene de embeddings: puede ser relevante aunque no comparta palabras exactas con la consulta.',
+    'Los candidatos pueden venir de busqueda predictiva por texto, busqueda semantica/textual o ambos metodos.',
+    'No penalices un candidato solo porque viene de busqueda semantica/textual: puede ser relevante aunque no comparta todas las palabras exactas con la consulta.',
     'Usa un criterio estricto de relevancia: solo sugeri un tramite si resuelve directamente la intencion expresada por el usuario.',
     'No sugieras tramites por asociaciones indirectas, coincidencias vagas o palabras sueltas si el tramite no permite hacer lo que el usuario pide.',
     'Si la consulta no parece relacionada con un tramite TAD o ningun candidato resuelve directamente la necesidad, responde que no se encontraron tramites relacionados.',
-    'Adapta la explicacion al tipo de consulta: palabra clave, pregunta o caso/necesidad expresada por el usuario.',
+    'Adapta la explicacion al tipo de consulta original: palabra clave, pregunta o caso/necesidad expresada por el usuario.',
+    'Usa la consulta original para redactar la explicacion de forma natural. Si el usuario dice "Necesito hacer..." o "Quiero...", responde con una frase del estilo "Si necesitas..." o "Si queres...".',
     'Responde solo con JSON valido, sin markdown, sin bloques de codigo y sin texto adicional.',
   ].join('\n');
 }
@@ -123,7 +124,7 @@ function buildUserPrompt(query, candidates) {
       ? `\nDescripcion: ${truncateText(item.descripcion, MAX_AI_DESCRIPTION_LENGTH)}`
       : '';
     const score = Number.isFinite(Number(item.scorePercent))
-      ? `\nAcierto embedding: ${item.scorePercent}%`
+      ? `\nAcierto busqueda: ${item.scorePercent}%`
       : '';
     const fusePercent = Number.isFinite(Number(item.fusePercent))
       ? `\nAcierto Fuse: ${item.fusePercent}%`
@@ -135,7 +136,7 @@ function buildUserPrompt(query, candidates) {
       ? `\nScore Fuse: ${Number(item.fuseScore).toFixed(4)} (mas bajo es mejor)`
       : '';
     const embeddingRank = Number.isFinite(Number(item.embeddingRank))
-      ? `\nRanking embeddings: #${item.embeddingRank}`
+      ? `\nRanking busqueda semantica/textual: #${item.embeddingRank}`
       : '';
     const source = Array.isArray(item.sources) && item.sources.length
       ? `\nOrigen: ${item.sources.join(', ')}`
@@ -167,13 +168,13 @@ Reglas:
 - "alternativas" puede tener 0 a 3 tramites adicionales entre los candidatos.
 - Selecciona un tramite solo si su nombre y descripcion coinciden de forma directa con la accion que quiere hacer el usuario.
 - No alcanza con que exista una palabra parecida o una relacion tematica general.
-- Trata los porcentajes bajos como evidencia debil. Si un candidato tiene Fuse 0% y embedding bajo, no lo sugieras salvo que la descripcion resuelva exactamente la necesidad.
+- Trata los porcentajes bajos como evidencia debil. Si un candidato tiene Fuse 0% y acierto de busqueda bajo, no lo sugieras salvo que la descripcion resuelva exactamente la necesidad.
 - Si el usuario quiere participar, anotarse o inscribirse en una actividad, no sugieras un tramite para organizar, autorizar o registrar esa actividad salvo que el tramite diga explicitamente que sirve para participantes.
 - Si el usuario pide algo privado, comercial, recreativo o fuera del alcance de tramites gubernamentales, devolve "principal": null y "alternativas": [].
 - Si el usuario escribio una palabra clave, responde en "explicacion" con una frase del estilo: "Si estas buscando tramites sobre ...".
 - Si el usuario hizo una pregunta, responde directamente la pregunta en "explicacion" antes de sugerir.
-- Si el usuario planteo un caso o necesidad, reconoce esa necesidad en "explicacion" antes de sugerir.
-- Considera especialmente los candidatos que aparecen por ambos metodos, pero tambien evalua los que vienen solo de embeddings si semanticamente son buenos.
+- Si el usuario planteo un caso o necesidad, reconoce esa necesidad en "explicacion" antes de sugerir usando la consulta original, no la consulta limpia.
+- Considera especialmente los candidatos que aparecen por ambos metodos, pero tambien evalua los que vienen solo de busqueda semantica/textual si semanticamente son buenos.
 - Si ningun candidato es claramente relevante, devolve "principal": null, "alternativas": [] y una "explicacion" amable como: "${NOT_FOUND_EXPLANATION}".
 - Los IDs deben coincidir exactamente con la lista de candidatos.`;
 }
@@ -212,8 +213,8 @@ function hasStrongSearchEvidence(candidate) {
   const fusePercent = Number(candidate.fusePercent);
   if (Number.isFinite(fusePercent) && fusePercent >= MIN_AI_FUSE_PERCENT) return true;
 
-  const embeddingPercent = Number(candidate.scorePercent);
-  if (Number.isFinite(embeddingPercent) && embeddingPercent >= MIN_AI_EMBEDDING_PERCENT) return true;
+  const searchPercent = Number(candidate.scorePercent);
+  if (Number.isFinite(searchPercent) && searchPercent >= MIN_AI_SEARCH_PERCENT) return true;
 
   return false;
 }

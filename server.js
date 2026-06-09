@@ -55,7 +55,12 @@ app.post('/api/search', async (req, res) => {
       .filter(Boolean)
       .slice(0, topK);
 
-    res.json({ query, resultados, total: resultados.length });
+    res.json({
+      query,
+      searchQuery: search.searchQuery || query,
+      resultados,
+      total: resultados.length,
+    });
   } catch (error) {
     res.status(503).json({
       error: 'No se pudo ejecutar la busqueda por embeddings',

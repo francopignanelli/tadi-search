@@ -118,7 +118,7 @@ function summarizeCandidate(item, index) {
     fuseRank: item.fuseRank ?? null,
     fuseScore: Number.isFinite(Number(item.fuseScore)) ? Number(item.fuseScore) : null,
     embeddingRank: item.embeddingRank ?? null,
-    embeddingPercent: Number.isFinite(Number(item.scorePercent)) ? Number(item.scorePercent) : null,
+    searchPercent: Number.isFinite(Number(item.scorePercent)) ? Number(item.scorePercent) : null,
     descriptionPreview: item.descripcion ? truncateText(item.descripcion, 160) : '',
   };
 }
@@ -206,8 +206,8 @@ function buildMarkdownDictionary() {
 - **Tokens cache**: parte del prompt que Gemini informa como cacheada. Ya esta incluida dentro de tokens entrada.
 - **Origen**: metodo que recupero el tramite antes de llegar a IA. Puede ser Fuse, embeddings o ambos.
 - **Fuse #**: posicion del tramite en la busqueda predictiva.
-- **Embedding #**: posicion del tramite en la busqueda semantica.
-- **Embedding %**: porcentaje de similitud semantica reportado por embeddings.
+- **Busqueda #**: posicion del tramite en la busqueda semantica/textual.
+- **Coincidencia %**: porcentaje combinado de coincidencia semantica/textual.
 
 `;
 }
@@ -247,7 +247,7 @@ ${record.error ? `- Error: ${record.error}\n` : ''}
 
 ### Candidatos enviados
 
-| IA # | ID | Tramite | Origen | Fuse # | Embedding # | Embedding % |
+| IA # | ID | Tramite | Origen | Fuse # | Busqueda # | Coincidencia % |
 |---:|---|---|---|---:|---:|---:|
 ${candidateRows}
 
@@ -263,7 +263,7 @@ function renderCandidateTableRow(candidate) {
     escapeMarkdownTable(candidate.sources.join(', ') || '-'),
     candidate.fuseRank || '-',
     candidate.embeddingRank || '-',
-    candidate.embeddingPercent ?? '-',
+    candidate.searchPercent ?? '-',
   ].join(' | ').replace(/^/, '| ').replace(/$/, ' |');
 }
 

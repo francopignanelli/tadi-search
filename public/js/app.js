@@ -84,7 +84,8 @@ const INITIAL_POPULAR_NAMES = [
   'reempadronamiento de consorcios',
 ];
 const SEARCH_STOPWORDS = new Set([
-  'quiero', 'necesito', 'tengo', 'hacer', 'realizar', 'iniciar', 'obtener', 'sacar', 'pedir',
+  'quiero', 'quisiera', 'deseo', 'necesito', 'necesitaria', 'tengo', 'busco', 'buscar', 'buscando',
+  'hacer', 'realizar', 'iniciar', 'obtener', 'sacar', 'pedir', 'conseguir', 'ver', 'saber',
   'tramite', 'tramites', 'tramitar', 'gestion', 'gestionar', 'solicitud', 'solicitar',
   'una', 'uno', 'unos', 'unas', 'para', 'por', 'con', 'sin', 'del', 'los', 'las', 'que',
   'como', 'donde', 'cuando', 'sobre', 'este', 'esta', 'esto', 'mis', 'tus', 'sus',
@@ -426,12 +427,14 @@ async function runSearch(ui) {
   state.embeddingResults = [];
   state.aiCandidates = [];
   state.aiSuggestedIds = new Set();
+  logSearchSummary(query, state.predictiveResults);
   setSearchButton(ui, true);
   showEmbeddingLoading(ui);
 
   try {
     state.embeddingResults = await searchByEmbedding(query);
     state.aiCandidates = buildAICandidates(query, state.predictiveResults, state.embeddingResults);
+    logSearchTable('Candidatos combinados para IA', state.aiCandidates);
 
     if (state.aiEnabled && state.aiCandidates.length) {
       showResults(ui, state.aiCandidates, { mode: 'candidate' });
@@ -445,15 +448,22 @@ async function runSearch(ui) {
     showResultsError(ui, error.message || 'No se pudo completar la búsqueda por embeddings.');
   } finally {
     setSearchButton(ui, false);
+    logSearchSeparator();
   }
 }
 
 // Llama al backend Node, que calcula la busqueda semantica integrada.
 async function searchByEmbedding(query) {
+  const requestPayload = { q: query, top_k: SEARCH_CONFIG.embeddingVisibleLimit };
+  logSearchInfo('Request búsqueda semántica/textual', {
+    endpoint: '/api/search',
+    payload: requestPayload,
+  });
+
   const response = await fetch('/api/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ q: query, top_k: SEARCH_CONFIG.embeddingVisibleLimit }),
+    body: JSON.stringify(requestPayload),
   });
   const data = await response.json();
 
@@ -461,8 +471,15 @@ async function searchByEmbedding(query) {
     throw new Error(data.error || 'No se pudo consultar la búsqueda por embeddings.');
   }
 
-  return (data.resultados || [])
+  const results = (data.resultados || [])
     .map((item, index) => enrichEmbeddingResult(item, index + 1));
+  logSearchInfo('Respuesta búsqueda semántica/textual', {
+    queryOriginal: data.query,
+    queryLimpia: data.searchQuery,
+    total: data.total,
+  });
+  logSearchTable('Top búsqueda semántica/textual', results);
+  return results;
 }
 
 // Unifica candidatos sin repetir segun SEARCH_CONFIG: Fuse por umbral y luego embeddings top N.
@@ -501,6 +518,14 @@ function getFuseCandidatesForSearch(predictiveResults, query) {
 // Pide a Gemini una sugerencia usando candidatos recuperados por Fuse y embeddings.
 async function requestAISuggestion(ui, query, candidates) {
   const aiCandidates = candidates.slice(0, getLimit(SEARCH_CONFIG.aiCandidatesSentLimit));
+  const aiPayloadCandidates = aiCandidates.map(toAICandidate);
+
+  logSearchInfo('Request IA', {
+    endpoint: '/api/ai',
+    queryOriginal: query,
+    candidatosEnviados: aiPayloadCandidates.length,
+  });
+  logSearchTable('Candidatos enviados a IA', aiPayloadCandidates);
 
   showAI(ui, aiShell(`<div class="ai-loading">${ICONS.loader} Analizando con IA...</div>`));
 
@@ -508,7 +533,7 @@ async function requestAISuggestion(ui, query, candidates) {
     const response = await fetch('/api/ai', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q: query, candidatos: aiCandidates.map(toAICandidate) }),
+      body: JSON.stringify({ q: query, candidatos: aiPayloadCandidates }),
     });
     const data = await response.json();
 
@@ -517,6 +542,8 @@ async function requestAISuggestion(ui, query, candidates) {
     }
 
     if (!state.aiEnabled) return;
+    logSearchInfo('Respuesta IA', data);
+    logAIUsageSummary(data, aiPayloadCandidates);
     renderAISuggestion(ui, data);
   } catch (error) {
     if (!state.aiEnabled) return;
@@ -780,11 +807,11 @@ function renderCard(item, options = {}) {
   }
 
   if (options.showDebug && Number.isFinite(Number(item.embeddingRank))) {
-    badges.push(`<span class="badge badge-score">Embedding #${Number(item.embeddingRank)}</span>`);
+    badges.push(`<span class="badge badge-score">Búsqueda #${Number(item.embeddingRank)}</span>`);
   }
 
   if (options.showEmbeddingPercent) {
-    badges.push(`<span class="badge badge-score">Embedding ${getScorePercent(item, true)}%</span>`);
+    badges.push(`<span class="badge badge-score">Coincidencia ${getScorePercent(item, true)}%</span>`);
   }
 
   if (options.showDebug && Number.isFinite(Number(item.aiCandidateRank))) {
@@ -897,7 +924,7 @@ function findById(id) {
   return (state.catalog || []).find(item => String(item.id) === String(id));
 }
 
-// Obtiene el porcentaje de similitud semantica para mostrarlo como acierto.
+// Obtiene el porcentaje combinado de coincidencia semantica/textual para mostrarlo como acierto.
 function getScorePercent(item, fallbackToZero = false) {
   const directPercent = Number(item?.scorePercent);
   if (Number.isFinite(directPercent)) return Math.max(0, Math.min(100, Math.round(directPercent)));
@@ -947,6 +974,79 @@ function getVisibleResults(results, context) {
   }
 
   return results;
+}
+
+// Registra en consola el flujo de busqueda confirmado. Sirve tambien en la vista /produccion.
+function logSearchSummary(query, predictiveResults) {
+  const cleanedQuery = buildSearchQuery(query);
+  const terms = tokenizeExactWords(query);
+  const fuseCandidates = getFuseCandidatesForSearch(predictiveResults, query);
+
+  logSearchInfo('Búsqueda iniciada', {
+    vista: APP_MODE,
+    queryOriginal: query,
+    queryLimpia: cleanedQuery,
+    terminosRelevantes: terms,
+    fuseResultados: predictiveResults.length,
+    fuseUmbralMinimo: `${SEARCH_CONFIG.fuseCandidateMinPercent}%`,
+    fuseCandidatosParaIA: fuseCandidates.length,
+    embeddingVisibleLimit: SEARCH_CONFIG.embeddingVisibleLimit,
+    embeddingCandidatesForAI: SEARCH_CONFIG.embeddingCandidatesForAI,
+    aiCandidatesSentLimit: SEARCH_CONFIG.aiCandidatesSentLimit,
+  });
+  logSearchTable('Resultados Fuse', predictiveResults);
+  logSearchTable('Candidatos Fuse que pasan filtro IA', fuseCandidates);
+}
+
+function logSearchInfo(label, data) {
+  if (!window.console) return;
+  console.groupCollapsed(`[TADI Search] ${label}`);
+  console.log(data);
+  console.groupEnd();
+}
+
+function logSearchTable(label, items, maxItems = 30) {
+  if (!window.console || typeof console.table !== 'function') return;
+  const rows = (items || []).slice(0, maxItems).map((item, index) => summarizeSearchItem(item, index));
+  console.groupCollapsed(`[TADI Search] ${label} (${rows.length}${items?.length > maxItems ? ` de ${items.length}` : ''})`);
+  console.table(rows);
+  console.groupEnd();
+}
+
+function logAIUsageSummary(data, aiPayloadCandidates) {
+  const usage = data?.usage || {};
+  logSearchInfo('Resumen tokens IA', {
+    tokensTramitesEnviadosEstimados: estimateTokenCount(JSON.stringify(aiPayloadCandidates || [])),
+    tokensTotalesConsumidos: usage.totalTokenCount ?? 'No informado',
+  });
+}
+
+function logSearchSeparator() {
+  if (!window.console) return;
+  console.log('============================== FIN BUSQUEDA TADI ==============================');
+}
+
+function summarizeSearchItem(item, index) {
+  return {
+    '#': index + 1,
+    id: item.id,
+    nombre: item.nombre,
+    origen: Array.isArray(item.sources) ? item.sources.join(', ') : '',
+    fuseRank: item.fuseRank ?? '',
+    fusePercent: getFusePercent(item, true),
+    busquedaRank: item.embeddingRank ?? '',
+    coincidenciaPercent: getScorePercent(item, true),
+    semanticaPercent: Number.isFinite(Number(item.semanticScore)) ? Math.round(Number(item.semanticScore) * 100) : '',
+    textualPercent: Number.isFinite(Number(item.lexicalScore)) ? Math.round(Number(item.lexicalScore) * 100) : '',
+    nombreExacto: Boolean(item.exactNameWords),
+    keywords: Array.isArray(item.keywords) ? item.keywords.join(', ') : '',
+  };
+}
+
+function estimateTokenCount(value) {
+  const text = String(value || '').trim();
+  if (!text) return 0;
+  return Math.ceil(text.length / 4);
 }
 
 // Convierte null/undefined en "sin limite" para centralizar la configuracion.

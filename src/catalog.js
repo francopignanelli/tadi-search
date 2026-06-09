@@ -42,6 +42,8 @@ function normalizeEmbeddingResult(result, catalogById) {
   if (!catalogItem) return null;
 
   const score = Number(result.score);
+  const semanticScore = Number(result.semanticScore);
+  const lexicalScore = Number(result.lexicalScore);
 
   return {
     id: catalogItem.id,
@@ -50,6 +52,8 @@ function normalizeEmbeddingResult(result, catalogById) {
     keywords: normalizeKeywords(result.keywords),
     score: Number.isFinite(score) ? score : 0,
     scorePercent: scoreToPercent(score),
+    semanticScore: Number.isFinite(semanticScore) ? semanticScore : null,
+    lexicalScore: Number.isFinite(lexicalScore) ? lexicalScore : null,
   };
 }
 
