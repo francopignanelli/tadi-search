@@ -443,6 +443,54 @@ tokensTotalesConsumidos
 
 El primer valor se estima localmente a partir de los candidatos enviados a IA. El segundo viene del `usageMetadata.totalTokenCount` reportado por Gemini.
 
+## Modificaciones para anadir tramites
+
+La aplicacion no consume el Excel directamente mientras esta corriendo. El catalogo operativo es:
+
+```text
+data/Listado_tramites_PRD.json
+```
+
+Para agregar un tramite nuevo, sumar un objeto al array JSON:
+
+```json
+{
+  "ID": 9999,
+  "NOMBRE_TRAMITE": "Nombre visible del tramite",
+  "DESCRIPCION_CORTA": "Descripcion breve que explique para que sirve el tramite y cuando corresponde usarlo.",
+  "DESCRIPCION_HTML": "Texto completo del tramite, requisitos, documentacion y pasos. Puede quedar vacio si no esta disponible.",
+  "keywords": [
+    "palabra clave principal",
+    "sinonimo frecuente",
+    "forma comun en que lo busca el usuario"
+  ]
+}
+```
+
+Detalle de campos:
+
+- `ID`: identificador unico. No debe repetirse.
+- `NOMBRE_TRAMITE`: nombre oficial mostrado al usuario.
+- `DESCRIPCION_CORTA`: texto principal usado por Fuse, busqueda semantica/textual e IA.
+- `DESCRIPCION_HTML`: descripcion larga. Hoy no se usa para generar embeddings.
+- `keywords`: campo opcional recomendado para sinonimos, nombres informales, abreviaturas o frases frecuentes que no aparecen claramente en el nombre.
+
+Despues de modificar el catalogo, regenerar embeddings:
+
+```bash
+npm run generate:embeddings
+```
+
+Ese comando actualiza:
+
+```text
+data/embeddings_tramites.json
+```
+
+El generador usa `NOMBRE_TRAMITE`, `DESCRIPCION_CORTA` y `keywords` para construir el texto vectorizado del tramite. Si un tramite no trae `keywords` en el catalogo, conserva las keywords previas del archivo de embeddings cuando existan.
+
+Luego hay que reiniciar la aplicacion o redeployar, porque `src/catalog.js` y `src/semantic-search.js` cachean catalogo y embeddings en memoria al arrancar el servidor.
+
 ## Comentarios sobre limpieza
 
 Se separo el backend en modulos:

@@ -29,7 +29,9 @@ async function main() {
 
   for (const item of catalog) {
     const previousItem = previous.get(String(item.id));
-    const keywords = normalizeKeywords(previousItem?.keywords);
+    const catalogKeywords = normalizeKeywords(item.keywords);
+    const previousKeywords = normalizeKeywords(previousItem?.keywords);
+    const keywords = catalogKeywords.length ? catalogKeywords : previousKeywords;
     const embeddingInput = { ...item, keywords };
 
     console.log(`[embeddings] Generando ID ${item.id}: ${item.nombre}`);
@@ -73,6 +75,7 @@ function normalizeCatalog(rawCatalog) {
       id: item.id ?? item.ID,
       nombre: cleanText(item.nombre ?? item.NOMBRE_TRAMITE),
       descripcion: cleanText(item.descripcion ?? item.DESCRIPCION_CORTA),
+      keywords: normalizeKeywords(item.keywords),
     }))
     .filter(item => item.id !== undefined && item.id !== null && item.nombre);
 }

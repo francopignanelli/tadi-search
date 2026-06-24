@@ -204,6 +204,56 @@ data/Listado_tramites_PRD.json
 data/embeddings_tramites.json
 ```
 
+## Modificaciones para añadir tramites
+
+La app no lee el Excel en ejecucion. Para agregar un tramite nuevo, hay que sumarlo al catalogo JSON y regenerar la base de embeddings.
+
+Archivo a modificar:
+
+```text
+data/Listado_tramites_PRD.json
+```
+
+El archivo es un array JSON. Agregar un objeto nuevo con este formato:
+
+```json
+{
+  "ID": 9999,
+  "NOMBRE_TRAMITE": "Nombre visible del tramite",
+  "DESCRIPCION_CORTA": "Descripcion breve que explique para que sirve el tramite y cuando corresponde usarlo.",
+  "DESCRIPCION_HTML": "Texto completo del tramite, requisitos, documentacion y pasos. Puede quedar vacio si no esta disponible.",
+  "keywords": [
+    "palabra clave principal",
+    "sinonimo frecuente",
+    "forma comun en que lo busca el usuario"
+  ]
+}
+```
+
+Campos:
+
+- `ID`: identificador unico. No debe repetirse.
+- `NOMBRE_TRAMITE`: nombre oficial que ve el usuario.
+- `DESCRIPCION_CORTA`: texto principal usado por Fuse, busqueda semantica e IA.
+- `DESCRIPCION_HTML`: contenido largo informativo. Hoy no se usa para generar embeddings.
+- `keywords`: opcional, pero recomendado para sinonimos, nombres informales, abreviaturas o frases frecuentes que no aparecen claramente en el nombre.
+
+Despues de editar el JSON, regenerar embeddings:
+
+```bash
+npm run generate:embeddings
+```
+
+Esto actualiza:
+
+```text
+data/embeddings_tramites.json
+```
+
+El generador toma `NOMBRE_TRAMITE`, `DESCRIPCION_CORTA` y `keywords`. Si el tramite no tiene `keywords` en el catalogo, conserva las keywords previas del archivo de embeddings cuando existan.
+
+Luego reiniciar la aplicacion o redeployar, porque el catalogo y embeddings quedan cacheados en memoria al arrancar el servidor.
+
 ## Consumo de IA
 
 La documentacion del registro de tokens esta en `AI_USAGE_LOGGING.md`.
@@ -218,4 +268,4 @@ Si cambia `data/Listado_tramites_PRD.json`:
 npm run generate:embeddings
 ```
 
-El generador usa `NOMBRE_TRAMITE` y `DESCRIPCION_CORTA`. No usa `DESCRIPCION_HTML`.
+El generador usa `NOMBRE_TRAMITE`, `DESCRIPCION_CORTA` y `keywords`. No usa `DESCRIPCION_HTML`.
