@@ -36,11 +36,11 @@ tramite, tramites, tramitar, gestion, gestionar, solicitud, solicitar
 Tambien se eliminan conectores y pronombres frecuentes:
 
 ```text
-una, uno, unos, unas, para, por, con, sin, del, los, las, que,
+una, uno, unos, unas, para, por, del, los, las, que,
 como, donde, cuando, sobre, este, esta, esto, mis, tus, sus
 ```
 
-Estas palabras se consideran genericas porque normalmente describen la forma de pedir, no el objeto del tramite.
+Estas palabras se consideran genericas porque normalmente describen la forma de pedir, no el objeto del tramite. `con` y `sin` se dejan fuera a proposito: invierten la intencion (por ejemplo, "certificado sin deuda" no debe reducirse a "certificado deuda").
 
 Ejemplo:
 

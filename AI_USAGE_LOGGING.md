@@ -5,10 +5,10 @@ La app registra cada llamado real a Gemini para entender que se envio y cuantos 
 ## Donde se implementa
 
 ```text
-src/gemini-service.js
+src/services/gemini-service.js
   Ejecuta el llamado a Gemini y envia los datos de auditoria.
 
-src/ai-usage-log.js
+src/services/ai-usage-log.js
   Construye y guarda el registro de consumo.
 ```
 

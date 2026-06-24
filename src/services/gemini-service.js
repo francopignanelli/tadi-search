@@ -1,32 +1,26 @@
-const { normalizeKeywords, truncateText } = require('./text-utils');
+const config = require('../config');
+const { normalizeKeywords, truncateText } = require('../text-utils');
 const { appendAIUsageLog, normalizeGeminiUsage } = require('./ai-usage-log');
 
-const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
-const REQUEST_TIMEOUT_MS = 20000;
-const MAX_AI_DESCRIPTION_LENGTH = 450;
-const MIN_AI_FUSE_PERCENT = 35;
-const MIN_AI_SEARCH_PERCENT = 45;
 const NOT_FOUND_EXPLANATION = 'No se encontraron tramites relacionados con tu busqueda. Intenta nuevamente con otras palabras.';
 
 // Consulta Gemini para elegir el tramite mas relevante entre candidatos ya filtrados.
 async function findProcedureWithGemini(query, candidates) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
+  if (!config.geminiApiKey) {
     return { error: 'GEMINI_API_KEY no configurada', fallback: true };
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), config.requestTimeoutMs);
   const startedAt = new Date();
   const requestPayload = buildGeminiRequest(query, candidates);
 
   try {
-    const response = await fetch(`${GEMINI_ENDPOINT}/${GEMINI_MODEL}:generateContent`, {
+    const response = await fetch(`${config.geminiEndpoint}/${config.geminiModel}:generateContent`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-goog-api-key': apiKey,
+        'X-goog-api-key': config.geminiApiKey,
       },
       body: JSON.stringify(requestPayload),
       signal: controller.signal,
@@ -42,7 +36,7 @@ async function findProcedureWithGemini(query, candidates) {
     const result = validateGeminiSelection(normalizeGeminiResponse(payload), candidates);
     await safeAppendAIUsageLog({
       query,
-      model: GEMINI_MODEL,
+      model: config.geminiModel,
       candidates,
       requestPayload,
       responsePayload: payload,
@@ -59,7 +53,7 @@ async function findProcedureWithGemini(query, candidates) {
     console.error('[gemini] Error:', error.message);
     await safeAppendAIUsageLog({
       query,
-      model: GEMINI_MODEL,
+      model: config.geminiModel,
       candidates,
       requestPayload,
       responsePayload: error.responsePayload,
@@ -121,7 +115,7 @@ function buildSystemPrompt() {
 function buildUserPrompt(query, candidates) {
   const candidateText = candidates.map((item, index) => {
     const description = item.descripcion
-      ? `\nDescripcion: ${truncateText(item.descripcion, MAX_AI_DESCRIPTION_LENGTH)}`
+      ? `\nDescripcion: ${truncateText(item.descripcion, config.maxAiDescriptionLength)}`
       : '';
     const score = Number.isFinite(Number(item.scorePercent))
       ? `\nAcierto busqueda: ${item.scorePercent}%`
@@ -211,10 +205,10 @@ function hasStrongSearchEvidence(candidate) {
   if (candidate.exactNameWords) return true;
 
   const fusePercent = Number(candidate.fusePercent);
-  if (Number.isFinite(fusePercent) && fusePercent >= MIN_AI_FUSE_PERCENT) return true;
+  if (Number.isFinite(fusePercent) && fusePercent >= config.minAiFusePercent) return true;
 
   const searchPercent = Number(candidate.scorePercent);
-  if (Number.isFinite(searchPercent) && searchPercent >= MIN_AI_SEARCH_PERCENT) return true;
+  if (Number.isFinite(searchPercent) && searchPercent >= config.minAiSearchPercent) return true;
 
   return false;
 }

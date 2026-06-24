@@ -14,44 +14,115 @@ La idea central es no depender de un unico ranking. Fuse.js recupera coincidenci
 
 ```mermaid
 flowchart LR
-  U["Usuario"] --> F["Frontend public/js/app.js"]
+  U["Usuario"] --> F["Frontend (modulos ES en public/js)"]
   F --> C["GET /api/catalog"]
   F --> S["POST /api/search"]
   F --> A["POST /api/ai"]
-  C --> N["server.js"]
-  S --> N
-  A --> N
-  N --> CAT["src/catalog.js"]
-  N --> SEM["src/semantic-search.js"]
-  N --> GEM["src/gemini-service.js"]
+  C --> R["src/routes/api.js"]
+  S --> R
+  A --> R
+  R --> CAT["src/data/catalog.js"]
+  R --> SRCH["src/services/search-service.js"]
+  R --> GEM["src/services/gemini-service.js"]
+  SRCH --> EMB["src/services/embedding-service.js"]
+  SRCH --> VECREPO["src/data/embeddings.js"]
+  CAT --> STORE["src/data/json-store.js"]
+  VECREPO --> STORE
   CAT --> DATA["data/Listado_tramites_PRD.json"]
-  SEM --> VEC["data/embeddings_tramites.json"]
+  VECREPO --> VEC["data/embeddings_tramites.json"]
   GEM --> API["Gemini API"]
 ```
 
+`server.js` solo hace el bootstrap (Express, middleware y montaje de `src/routes/api.js`). La configuracion (env, paths, limites y umbrales) se centraliza en `src/config.js`.
+
 ## Archivos principales
+
+Backend, separado por capas:
 
 ```text
 server.js
-  Expone endpoints y coordina catalogo, embeddings e IA.
+  Bootstrap: arma Express, monta middleware y rutas, levanta el server.
 
-src/catalog.js
-  Lee y normaliza el catalogo PRD.
+src/config.js
+  Unica lectura de process.env: env, paths, limites y umbrales.
 
-src/semantic-search.js
-  Carga embeddings, limpia la consulta, calcula similitud coseno y aplica refuerzo textual.
+src/routes/api.js
+  express.Router con /api/catalog, /api/search, /api/ai y /produccion. Controladores delgados.
 
-src/gemini-service.js
-  Construye prompts, llama a Gemini y normaliza la respuesta.
+src/data/json-store.js
+  Lectura de JSON cacheada con invalidacion por mtime.
 
-src/ai-usage-log.js
+src/data/catalog.js
+  Repositorio: lee y normaliza el catalogo PRD.
+
+src/data/embeddings.js
+  Repositorio: carga la base vectorizada y precalcula la norma de cada vector.
+
+src/services/search-service.js
+  Orquesta la busqueda semantica/textual y mapea los resultados al catalogo.
+
+src/services/embedding-service.js
+  Pipeline de embeddings, similitud coseno y refuerzo lexical.
+
+src/services/gemini-service.js
+  Construye prompts, llama a Gemini, valida la respuesta y la normaliza.
+
+src/services/ai-usage-log.js
   Registra que se envio a Gemini y cuantos tokens reporto la API.
 
 src/text-utils.js
-  Utilidades compartidas de texto, porcentajes y limites.
+  Re-export del modulo de texto compartido (shared/text-search.js).
 
+scripts/generate-embeddings.js
+  Regenera data/embeddings_tramites.json.
+```
+
+Capa compartida (carpeta neutral, fuera de src/ y public/):
+
+```text
+shared/text-search.js
+  Primitivas de texto/scoring compartidas con el backend (UMD: Node por require, navegador
+  por window.TadiText). El server la sirve en /shared.
+```
+
+Frontend, dividido en modulos ES:
+
+```text
 public/js/app.js
-  Controla UI, Fuse.js, armado de candidatos, render de tarjetas y llamada a endpoints.
+  Punto de entrada: init y wiring de eventos. Cargado como <script type="module">.
+
+public/js/config.js
+  Constantes de UI: SELECTORS, SEARCH_CONFIG, modo de vista.
+
+public/js/text.js
+  Adaptador de las primitivas compartidas como modulo ES.
+
+public/js/state.js
+  Estado compartido de la app.
+
+public/js/dom.js
+  Helpers de DOM: svg, escapeHtml, getLimit, ICONS.
+
+public/js/api.js
+  Cliente HTTP del backend (fetchCatalog, postSearch, postAI).
+
+public/js/candidates.js
+  Scoring para mostrar, filtrado para IA y fusion de candidatos.
+
+public/js/logging.js
+  Logs del flujo de busqueda en la consola del navegador.
+
+public/js/catalog.js
+  Carga de catalogo, indice Fuse.js, busqueda local y listado inicial.
+
+public/js/render.js
+  Renderizado de tarjetas, resultados, paginacion y tarjeta de IA.
+
+public/js/autocomplete.js
+  Sugerencias mientras se escribe y navegacion por teclado.
+
+public/js/search.js
+  Orquestacion de input, busqueda confirmada y consulta a IA.
 
 public/css/app.css
   Estilos base compartidos y vista de testing con etiquetas de ranking.
@@ -64,9 +135,6 @@ public/production/styles.css
 
 public/production/assets/
   Imagenes e iconos usados solo por la vista de presentacion.
-
-scripts/generate-embeddings.js
-  Regenera data/embeddings_tramites.json.
 ```
 
 ## Datos usados
@@ -102,7 +170,7 @@ Formato normalizado interno:
 
 ## Configuracion editable
 
-En `public/js/app.js`:
+En `public/js/config.js`:
 
 ```js
 const SEARCH_CONFIG = {
@@ -131,11 +199,8 @@ Significado:
 Implementacion:
 
 ```text
-public/js/app.js
-initFuse()
-searchLocal()
-enrichPredictiveResult()
-getFuseCandidatesForSearch()
+public/js/catalog.js     initFuse(), searchLocal()
+public/js/candidates.js  enrichPredictiveResult(), getFuseCandidatesForSearch()
 ```
 
 Campos usados:
@@ -183,9 +248,11 @@ Stopwords actuales:
 quiero, quisiera, deseo, necesito, necesitaria, tengo, busco, buscar, buscando,
 hacer, realizar, iniciar, obtener, sacar, pedir, conseguir, ver, saber,
 tramite, tramites, tramitar, gestion, gestionar, solicitud, solicitar,
-una, uno, unos, unas, para, por, con, sin, del, los, las, que,
+una, uno, unos, unas, para, por, del, los, las, que,
 como, donde, cuando, sobre, este, esta, esto, mis, tus, sus
 ```
+
+`con` y `sin` se excluyeron a proposito: son preposiciones que invierten la intencion de la busqueda (por ejemplo, "certificado sin deuda" no debe reducirse a "certificado deuda").
 
 Ejemplo:
 
@@ -219,9 +286,11 @@ Orden de prioridad:
 Implementacion:
 
 ```text
-src/semantic-search.js
-server.js -> POST /api/search
-public/js/app.js -> searchByEmbedding()
+src/services/search-service.js     orquesta busqueda + mapeo al catalogo
+src/services/embedding-service.js  embedding de la consulta, coseno y refuerzo lexical
+src/data/embeddings.js             carga de la base vectorizada
+src/routes/api.js -> POST /api/search
+public/js/search.js -> searchByEmbedding()
 ```
 
 Campos usados para generar embeddings:
@@ -309,10 +378,9 @@ Si hay coincidencias fuertes, el tramite sube en el ranking aunque el embedding 
 Implementacion:
 
 ```text
-src/gemini-service.js
-server.js -> POST /api/ai
-public/js/app.js -> requestAISuggestion()
-renderAISuggestion()
+src/services/gemini-service.js
+src/routes/api.js -> POST /api/ai
+public/js/search.js -> requestAISuggestion(), renderAISuggestion()
 ```
 
 Gemini no recibe todo el catalogo. Recibe candidatos ya filtrados.
@@ -414,7 +482,7 @@ Muestra candidatos IA y sugerencia:
 
 ## Debug en consola
 
-Al presionar Buscar, `public/js/app.js` registra el flujo completo en la consola del navegador, tanto en `/` como en `/produccion`.
+Al presionar Buscar, `public/js/logging.js` (invocado desde `public/js/search.js`) registra el flujo completo en la consola del navegador, tanto en `/` como en `/produccion`.
 
 Grupos emitidos:
 
@@ -489,15 +557,20 @@ data/embeddings_tramites.json
 
 El generador usa `NOMBRE_TRAMITE`, `DESCRIPCION_CORTA` y `keywords` para construir el texto vectorizado del tramite. Si un tramite no trae `keywords` en el catalogo, conserva las keywords previas del archivo de embeddings cuando existan.
 
-Luego hay que reiniciar la aplicacion o redeployar, porque `src/catalog.js` y `src/semantic-search.js` cachean catalogo y embeddings en memoria al arrancar el servidor.
+No hace falta reiniciar: `src/data/json-store.js` cachea catalogo y embeddings con invalidacion por fecha de modificacion, asi que al regenerar `data/embeddings_tramites.json` la app lo recarga sola en la siguiente consulta.
 
-## Comentarios sobre limpieza
+## Arquitectura y separacion de responsabilidades
 
-Se separo el backend en modulos:
+El backend sigue una separacion por capas:
 
-- Catalogo: `src/catalog.js`.
-- IA: `src/gemini-service.js`.
-- Embeddings: `src/semantic-search.js`.
-- Utilidades: `src/text-utils.js`.
+- Configuracion: `src/config.js` (unica lectura de `process.env`).
+- Datos (repositorios): `src/data/json-store.js`, `src/data/catalog.js`, `src/data/embeddings.js`.
+- Servicios: `src/services/search-service.js`, `src/services/embedding-service.js`, `src/services/gemini-service.js`, `src/services/ai-usage-log.js`.
+- Rutas: `src/routes/api.js` (controladores delgados que delegan en servicios).
+- Bootstrap: `server.js`.
 
-Tambien se elimino estado de frontend sin uso (`aiPending`). Los archivos `.log`, `.env`, `node_modules`, `.venv` y caches de Python estan ignorados por `.gitignore`.
+Las primitivas de texto y scoring viven en un unico modulo UMD en una carpeta neutral (`shared/text-search.js`) que comparten backend (`require`) y navegador (`window.TadiText`, servido en `/shared`), para no duplicar stopwords ni normalizacion ni acoplar el backend al frontend.
+
+El frontend, antes un unico `app.js` de mas de 1000 lineas, se dividio en modulos ES con dependencias en capas (config/text/state/dom/api -> candidates/logging/catalog -> render/autocomplete -> search -> app). `app.js` quedo solo como punto de entrada con el wiring de eventos.
+
+Los archivos `.log`, `.env`, `node_modules`, `.venv`, `.playwright-mcp` y caches de Python estan ignorados por `.gitignore`.

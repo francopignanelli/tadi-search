@@ -66,8 +66,8 @@ Xenova/paraphrase-multilingual-MiniLM-L12-v2
 Donde esta configurado:
 
 ```js
-// src/semantic-search.js
-const MODEL_ID = process.env.EMBEDDING_MODEL || 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
+// src/config.js
+embeddingModel: process.env.EMBEDDING_MODEL || 'Xenova/paraphrase-multilingual-MiniLM-L12-v2',
 ```
 
 Tambien puede configurarse desde `.env`:
@@ -164,16 +164,18 @@ Estructura aproximada:
 ### Logica principal de embeddings
 
 ```text
-src/semantic-search.js
+src/services/embedding-service.js  Carga el modelo, genera embeddings y calcula similitud.
+src/data/embeddings.js             Lee data/embeddings_tramites.json y precalcula normas.
+src/services/search-service.js     Rankea y devuelve resultados ordenados.
 ```
 
 Responsabilidades:
 
-- Cargar el modelo.
-- Generar embeddings de textos.
-- Leer `data/embeddings_tramites.json`.
-- Calcular similitud entre vectores.
-- Devolver resultados ordenados.
+- Cargar el modelo. (`embedding-service.js`)
+- Generar embeddings de textos. (`embedding-service.js`)
+- Leer `data/embeddings_tramites.json`. (`data/embeddings.js`)
+- Calcular similitud entre vectores. (`embedding-service.js`)
+- Devolver resultados ordenados. (`search-service.js`)
 
 ### Script de generacion
 
@@ -260,7 +262,7 @@ fs.writeFileSync(EMBEDDINGS_PATH, nextContent, 'utf8');
 El texto de cada tramite se arma en:
 
 ```js
-// src/semantic-search.js
+// src/services/embedding-service.js
 function buildEmbeddingText(item) {
   const nombre = cleanText(item.nombre);
   const descripcion = cleanText(item.descripcion);
@@ -286,61 +288,46 @@ Actualmente no se usa `DESCRIPCION_HTML`.
 Cuando el usuario presiona Buscar, el frontend llama al backend:
 
 ```js
-// public/js/app.js
+// public/js/search.js -> public/js/api.js
 async function searchByEmbedding(query) {
-  const response = await fetch('/api/search', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ q: query, top_k: MAX_EMBEDDING_RESULTS }),
-  });
-
-  const data = await response.json();
-  return data.resultados || [];
+  const data = await postSearch(query, SEARCH_CONFIG.embeddingVisibleLimit);
+  return (data.resultados || []).map((item, index) => enrichEmbeddingResult(item, index + 1));
 }
 ```
 
-El backend recibe esa consulta:
+El backend recibe esa consulta. El controlador es delgado y delega en el servicio:
 
 ```js
-// server.js
-app.post('/api/search', async (req, res) => {
+// src/routes/api.js
+router.post('/api/search', async (req, res) => {
   const { q, top_k: requestedTopK } = req.body || {};
-  const query = String(q).slice(0, MAX_QUERY_LENGTH);
-  const topK = clamp(Number(requestedTopK) || 15, 1, MAX_EMBEDDING_CANDIDATES);
-
-  const catalog = getCatalog();
-  const catalogById = new Map(catalog.map(item => [String(item.id), item]));
-  const search = await searchWithEmbeddings(query, topK);
-  const resultados = (search.resultados || [])
-    .map(item => normalizeEmbeddingResult(item, catalogById))
-    .filter(Boolean)
-    .slice(0, topK);
-
-  res.json({ query, resultados, total: resultados.length });
+  const query = String(q).slice(0, config.maxQueryLength);
+  const topK = clamp(Number(requestedTopK) || 15, 1, config.maxEmbeddingCandidates);
+  res.json(await search(query, topK));
 });
 ```
 
-La busqueda semantica real esta en:
+La orquestacion (rankeo + mapeo al catalogo) vive en `src/services/search-service.js`. La busqueda semantica/textual combina similitud coseno con un refuerzo lexical:
 
 ```js
-// src/semantic-search.js
+// src/services/search-service.js
 async function searchWithEmbeddings(query, topK) {
   const records = loadEmbeddings();
-  const queryEmbedding = await createEmbedding(query);
+  const searchQuery = buildSearchQuery(query);
+  const queryEmbedding = await createEmbedding(searchQuery);
+  const queryTerms = tokenizeSearchTerms(query);
 
   const resultados = records
     .filter(item => item.embedding.length === queryEmbedding.length)
-    .map(item => ({
-      id: item.id,
-      nombre: item.nombre,
-      descripcion: item.descripcion,
-      keywords: item.keywords,
-      score: cosineSimilarity(queryEmbedding, item.embedding, item.norm),
-    }))
+    .map(item => {
+      const semanticScore = cosineSimilarity(queryEmbedding, item.embedding, item.norm);
+      const lexicalScore = calculateLexicalScore(queryTerms, item);
+      return { id: item.id, nombre: item.nombre, descripcion: item.descripcion, keywords: item.keywords, score: Math.max(semanticScore, lexicalScore), semanticScore, lexicalScore };
+    })
     .sort((a, b) => b.score - a.score)
     .slice(0, topK);
 
-  return { query, resultados };
+  return { query, searchQuery, resultados };
 }
 ```
 
@@ -351,7 +338,7 @@ La comparacion se hace con similitud coseno.
 Implementacion:
 
 ```js
-// src/semantic-search.js
+// src/services/embedding-service.js
 function cosineSimilarity(left, right, rightNorm = vectorNorm(right)) {
   const length = Math.min(left.length, right.length);
   let dot = 0;

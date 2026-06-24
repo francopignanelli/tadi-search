@@ -1,16 +1,12 @@
 const fs = require('fs');
-const path = require('path');
 
-const {
-  EMBEDDINGS_PATH,
-  MODEL_ID,
-  buildEmbeddingText,
-  createEmbedding,
-  normalizeKeywords,
-} = require('../src/semantic-search');
-const { cleanText } = require('../src/text-utils');
+const config = require('../src/config');
+const { buildEmbeddingText, createEmbedding } = require('../src/services/embedding-service');
+const { cleanText, normalizeKeywords } = require('../src/text-utils');
 
-const CATALOG_PATH = path.join(__dirname, '..', 'data', 'Listado_tramites_PRD.json');
+const CATALOG_PATH = config.catalogPath;
+const EMBEDDINGS_PATH = config.embeddingsPath;
+const MODEL_ID = config.embeddingModel;
 
 main().catch(error => {
   console.error('[embeddings] Error generando embeddings:', error);
