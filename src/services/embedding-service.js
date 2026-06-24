@@ -1,47 +1,16 @@
-const fs = require('fs');
-const path = require('path');
+const config = require('../config');
+const { vectorNorm } = require('../data/embeddings');
 const {
-  buildSearchQuery,
   cleanText,
   normalizeForSearch,
   normalizeKeywords,
   tokenizeSearchTerms,
-} = require('./text-utils');
+} = require('../text-utils');
 
-const MODEL_ID = process.env.EMBEDDING_MODEL || 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
-const EMBEDDINGS_PATH = path.join(__dirname, '..', 'data', 'embeddings_tramites.json');
+// Servicio de embeddings: genera vectores con el modelo local de Hugging Face y provee
+// las metricas de similitud (coseno + score lexical) usadas para rankear tramites.
 
 let extractorPromise;
-let embeddingsCache;
-
-// Busca los tramites mas cercanos semanticamente a la consulta usando embeddings precalculados.
-async function searchWithEmbeddings(query, topK) {
-  const records = loadEmbeddings();
-  const searchQuery = buildSearchQuery(query);
-  const queryEmbedding = await createEmbedding(searchQuery);
-  const queryTerms = tokenizeSearchTerms(query);
-
-  const resultados = records
-    .filter(item => item.embedding.length === queryEmbedding.length)
-    .map(item => {
-      const semanticScore = cosineSimilarity(queryEmbedding, item.embedding, item.norm);
-      const lexicalScore = calculateLexicalScore(queryTerms, item);
-
-      return {
-        id: item.id,
-        nombre: item.nombre,
-        descripcion: item.descripcion,
-        keywords: item.keywords,
-        score: Math.max(semanticScore, lexicalScore),
-        semanticScore,
-        lexicalScore,
-      };
-    })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
-
-  return { query, searchQuery, resultados };
-}
 
 // Genera el vector numerico de un texto usando el modelo local de Hugging Face.
 async function createEmbedding(text) {
@@ -54,34 +23,11 @@ async function createEmbedding(text) {
   return Array.from(output.data || []);
 }
 
-// Lee la base vectorizada desde disco y la cachea en memoria junto con la norma de cada vector.
-function loadEmbeddings() {
-  if (embeddingsCache) return embeddingsCache;
-
-  const raw = JSON.parse(fs.readFileSync(EMBEDDINGS_PATH, 'utf8'));
-  embeddingsCache = raw
-    .map(item => ({
-      id: item.id,
-      nombre: cleanText(item.nombre),
-      descripcion: cleanText(item.descripcion),
-      keywords: normalizeKeywords(item.keywords),
-      embedding: Array.isArray(item.embedding) ? item.embedding.map(Number) : [],
-    }))
-    .filter(item => item.id !== undefined && item.id !== null && item.embedding.length)
-    .map(item => ({
-      ...item,
-      norm: vectorNorm(item.embedding),
-    }))
-    .filter(item => item.norm > 0);
-
-  return embeddingsCache;
-}
-
 // Carga una unica instancia del pipeline de embeddings para reutilizarla entre busquedas.
 async function getExtractor() {
   if (!extractorPromise) {
     extractorPromise = import('@huggingface/transformers')
-      .then(({ pipeline }) => pipeline('feature-extraction', MODEL_ID));
+      .then(({ pipeline }) => pipeline('feature-extraction', config.embeddingModel));
   }
 
   return extractorPromise;
@@ -180,18 +126,10 @@ function clampLexicalScore(value) {
   return Math.max(0, Math.min(0.99, value));
 }
 
-// Calcula la norma de un vector para reutilizarla en la similitud coseno.
-function vectorNorm(values) {
-  return Math.sqrt(values.reduce((total, value) => total + ((Number(value) || 0) ** 2), 0));
-}
-
 module.exports = {
-  MODEL_ID,
-  EMBEDDINGS_PATH,
   buildEmbeddingText,
-  createEmbedding,
   calculateLexicalScore,
-  loadEmbeddings,
-  normalizeKeywords,
-  searchWithEmbeddings,
+  cosineSimilarity,
+  createEmbedding,
+  getExtractor,
 };

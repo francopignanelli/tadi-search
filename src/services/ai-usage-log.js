@@ -1,28 +1,16 @@
 const fs = require('fs/promises');
 const path = require('path');
-const { truncateText } = require('./text-utils');
+const config = require('../config');
+const { estimateTokenCount, truncateText } = require('../text-utils');
 
-const DEFAULT_LOG_DIR = path.join(__dirname, '..', 'logs');
 const MARKDOWN_LOG_FILE = 'ai-usage.md';
 const JSON_LOG_FILE = 'ai-usage.ndjson';
 
-// Indica si el registro de consumo IA esta habilitado por variables de entorno.
-function isUsageLogEnabled() {
-  return String(process.env.AI_USAGE_LOG_ENABLED || 'true').toLowerCase() !== 'false';
-}
-
-// Resuelve la carpeta donde se guardan los logs de consumo IA.
-function getUsageLogDir() {
-  return process.env.AI_USAGE_LOG_DIR
-    ? path.resolve(process.env.AI_USAGE_LOG_DIR)
-    : DEFAULT_LOG_DIR;
-}
-
 // Guarda una entrada de auditoria en formato humano y estructurado.
 async function appendAIUsageLog(input) {
-  if (!isUsageLogEnabled()) return null;
+  if (!config.usageLogEnabled) return null;
 
-  const logDir = getUsageLogDir();
+  const logDir = config.usageLogDir;
   const record = buildAIUsageRecord(input);
 
   await fs.mkdir(logDir, { recursive: true });
@@ -79,17 +67,6 @@ function summarizeSentData(query, candidates = [], requestPayload = {}) {
     sourceBreakdown: summarizeCandidateSources(candidates),
     candidates: candidates.map(summarizeCandidate),
   };
-}
-
-// Calcula una estimacion local de tokens para el texto escrito por el usuario en el buscador.
-function estimateTokenCount(value) {
-  const text = String(value || '').trim();
-  if (!text) return 0;
-
-  const words = text.split(/\s+/).filter(Boolean).length;
-  const charsEstimate = Math.ceil(text.length / 4);
-  const wordsEstimate = Math.ceil(words * 1.35);
-  return Math.max(1, charsEstimate, wordsEstimate);
 }
 
 // Cuenta de que metodo viene cada candidato enviado a Gemini.
@@ -158,7 +135,7 @@ async function ensureMarkdownHeader(filePath) {
 
 // Inserta el diccionario en logs creados con el formato anterior sin duplicar el titulo.
 function addDictionaryToExistingLog(content) {
-  const cleanContent = content.replace(/^\uFEFF/, '');
+  const cleanContent = content.replace(/^﻿/, '');
 
   if (!cleanContent.startsWith('# Registro de consumo IA')) {
     return `${buildMarkdownHeader()}\n${cleanContent}`;

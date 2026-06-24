@@ -135,9 +135,11 @@ La busqueda semantica/textual ocurre cuando la persona confirma la busqueda pres
 Archivos principales:
 
 ```text
-public/js/app.js
-server.js
-src/semantic-search.js
+public/js/search.js
+src/routes/api.js
+src/services/search-service.js
+src/services/embedding-service.js
+src/data/embeddings.js
 data/embeddings_tramites.json
 ```
 
@@ -279,7 +281,7 @@ Ese porcentaje hoy se mantiene como ayuda para testeo. No representa una certeza
 
 ### Ranking semantico/textual
 
-`src/semantic-search.js` calcula un ranking combinado.
+`src/services/search-service.js` (usando `src/services/embedding-service.js`) calcula un ranking combinado.
 
 Ese ranking combina:
 
@@ -289,7 +291,7 @@ similitud semantica por embeddings
 coincidencia textual sobre nombre, descripcion corta y keywords
 ```
 
-La coincidencia textual se calcula en el backend, dentro de `src/semantic-search.js`, con `calculateLexicalScore()`.
+La coincidencia textual se calcula en el backend, dentro de `src/services/embedding-service.js`, con `calculateLexicalScore()`.
 
 No viene de Fuse.js. Fuse.js solo se usa para la busqueda predictiva del frontend.
 
@@ -308,12 +310,12 @@ Flujo completo de embeddings:
 
 ```text
 Usuario presiona Enter o Buscar
--> public/js/app.js llama POST /api/search
--> server.js recibe q y top_k
--> src/semantic-search.js limpia la consulta y genera embedding de la consulta limpia
--> Node compara contra data/embeddings_tramites.json
--> server.js cruza resultados con Listado_tramites_PRD.json
--> src/semantic-search.js aplica ranking semantico/textual
+-> public/js/search.js llama POST /api/search (via public/js/api.js)
+-> src/routes/api.js recibe q y top_k y delega en search-service
+-> src/services/search-service.js limpia la consulta y genera embedding (embedding-service) de la consulta limpia
+-> Node compara contra data/embeddings_tramites.json (src/data/embeddings.js)
+-> src/services/search-service.js cruza resultados con Listado_tramites_PRD.json
+-> src/services/search-service.js aplica ranking semantico/textual
 -> frontend muestra resultados segun SEARCH_CONFIG
 ```
 

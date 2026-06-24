@@ -51,7 +51,7 @@ Si `GEMINI_API_KEY` no esta configurada, la busqueda predictiva y la busqueda se
 
 ## Configuracion de busqueda
 
-Los valores principales estan en `public/js/app.js`, dentro de `SEARCH_CONFIG`:
+Los valores principales estan en `public/js/config.js`, dentro de `SEARCH_CONFIG`:
 
 ```js
 const SEARCH_CONFIG = {
@@ -90,9 +90,11 @@ Stopwords principales:
 quiero, quisiera, deseo, necesito, necesitaria, tengo, busco, buscar, buscando,
 hacer, realizar, iniciar, obtener, sacar, pedir, conseguir, ver, saber,
 tramite, tramites, tramitar, gestion, gestionar, solicitud, solicitar,
-una, uno, unos, unas, para, por, con, sin, del, los, las, que,
+una, uno, unos, unas, para, por, del, los, las, que,
 como, donde, cuando, sobre, este, esta, esto, mis, tus, sus
 ```
+
+Nota: `con` y `sin` se quitaron a proposito de las stopwords porque invierten la intencion (por ejemplo, "certificado sin deuda" no debe reducirse a "certificado deuda").
 
 No deben agregarse como stopwords palabras de dominio que cambian la intencion, como `alta`, `baja`, `urgente`, `licencia`, `certificado`, `partida` o `domicilio`.
 
@@ -186,22 +188,44 @@ Grupos principales:
 
 ## Estructura
 
+El backend sigue una separacion por capas (configuracion, datos, servicios, rutas) y el frontend esta dividido en modulos ES.
+
 ```text
-server.js
-src/catalog.js
-src/gemini-service.js
-src/semantic-search.js
-src/text-utils.js
-src/ai-usage-log.js
-scripts/generate-embeddings.js
-public/index.html
-public/css/app.css
-public/js/app.js
-public/production/index.html
-public/production/styles.css
-public/production/assets/
-data/Listado_tramites_PRD.json
-data/embeddings_tramites.json
+shared/text-search.js             Primitivas de texto/scoring compartidas backend + frontend (UMD, servido en /shared).
+server.js                         Bootstrap: arma Express, monta middleware y rutas, levanta el server.
+src/config.js                     Unica lectura de process.env: env, paths, limites y umbrales.
+src/text-utils.js                 Re-export del modulo de texto compartido (fuente unica de verdad).
+src/data/json-store.js            Lectura de JSON cacheada con invalidacion por mtime.
+src/data/catalog.js               Repositorio del catalogo PRD.
+src/data/embeddings.js            Repositorio de la base vectorizada.
+src/services/embedding-service.js Pipeline de embeddings + similitud coseno + score lexical.
+src/services/search-service.js    Orquesta la busqueda semantica y la mapea al catalogo.
+src/services/gemini-service.js    Construye prompts, llama a Gemini y valida la respuesta.
+src/services/ai-usage-log.js      Registra que se envio a Gemini y los tokens reportados.
+src/routes/api.js                 express.Router con /api/catalog, /api/search, /api/ai y /produccion.
+scripts/generate-embeddings.js    Regenera data/embeddings_tramites.json.
+
+public/index.html                 Vista de testing.
+public/production/index.html      Vista de presentacion limpia.
+public/css/app.css                Estilos base.
+public/production/styles.css      Capa visual de la vista de presentacion.
+public/production/assets/         Imagenes e iconos de la vista de presentacion.
+
+public/js/app.js                  Punto de entrada del frontend: init y wiring de eventos.
+public/js/config.js               Constantes de UI (SELECTORS, SEARCH_CONFIG, modo de vista).
+public/js/text.js                 Adaptador de las primitivas compartidas como modulo ES.
+public/js/state.js                Estado compartido de la app.
+public/js/dom.js                  Helpers de DOM: svg, escapeHtml, getLimit, ICONS.
+public/js/api.js                  Cliente HTTP del backend.
+public/js/candidates.js           Scoring, filtrado y fusion de candidatos.
+public/js/logging.js              Logs del flujo de busqueda en consola.
+public/js/catalog.js              Carga de catalogo, Fuse.js, busqueda local y listado inicial.
+public/js/render.js               Renderizado de tarjetas, resultados, paginacion y tarjeta IA.
+public/js/autocomplete.js         Sugerencias mientras se escribe y navegacion por teclado.
+public/js/search.js               Orquestacion de input, busqueda y consulta a IA.
+
+data/Listado_tramites_PRD.json    Catalogo fuente.
+data/embeddings_tramites.json     Base vectorizada generada.
 ```
 
 ## Modificaciones para añadir tramites
@@ -252,7 +276,7 @@ data/embeddings_tramites.json
 
 El generador toma `NOMBRE_TRAMITE`, `DESCRIPCION_CORTA` y `keywords`. Si el tramite no tiene `keywords` en el catalogo, conserva las keywords previas del archivo de embeddings cuando existan.
 
-Luego reiniciar la aplicacion o redeployar, porque el catalogo y embeddings quedan cacheados en memoria al arrancar el servidor.
+El catalogo y los embeddings se cachean en memoria con invalidacion por fecha de modificacion (`src/data/json-store.js`): al cambiar los archivos JSON en disco, la app los recarga sola en la siguiente consulta, sin necesidad de reiniciar el servidor.
 
 ## Consumo de IA
 
